@@ -121,7 +121,18 @@ def _format_output(results: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
+RECURSION_GUARD_ENV = "MV2_HOOK_RECURSION_GUARD"
+
+
 def main() -> int:
+    # sub-session의 hook 즉시 skip (자기 자신 발동에서 또 호출되는 무한 재귀 차단)
+    import os as _os
+    if _os.environ.get(RECURSION_GUARD_ENV) == "1":
+        try:
+            sys.stdin.read()
+        except Exception:
+            pass
+        return 0
     t0 = time.time()
     signal.signal(signal.SIGALRM, _alarm_handler)
     signal.setitimer(signal.ITIMER_REAL, HARD_TIMEOUT_MS / 1000.0)
