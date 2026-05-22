@@ -17,7 +17,9 @@ DATA_DIR = Path("/Users/yonghaekim/.claude/mindvault-v2")
 DEBUG_LOG = DATA_DIR / "debug.log"
 METRICS_LOG = DATA_DIR / "metrics.jsonl"
 MIN_PROMPT_LEN = 3
-HARD_TIMEOUT_MS = 200
+# 200ms target. 250 cap to absorb cold-start variance (mlx 첫 forward + sqlite
+# open + 104 .md mtime stat). Warm 평균 ~130ms.
+HARD_TIMEOUT_MS = 250
 SCORE_THRESHOLD = 0.65
 TOP_K = 3
 MEMORY_DIRS = [

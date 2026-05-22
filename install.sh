@@ -273,6 +273,11 @@ print(f'✓ indexed {n} memories')
   else
     echo "  (initial indexing skipped — run later with: python3 $SCRIPTS_DIR/memory_indexer.py)"
   fi
+
+  # 4.9 hook warmup — cold-start latency 미리 지불 (200ms→150ms)
+  echo "→ Pre-warming hook (cold start mitigation)..."
+  echo '{"prompt":"warmup"}' | python3 "$MEMORY_HOOK_TARGET" >/dev/null 2>&1 || true
+  echo "✓ hook pre-warmed"
 fi
 
 echo ""
