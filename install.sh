@@ -149,17 +149,17 @@ fi
 
 echo ""
 echo ""
-echo "── Sprint 4 — Layer 4 Memory Recall (Hybrid) ─────────────────────"
+echo "── Sprint 4 — Layer 4 Memory Recall (Arctic-ko hybrid RRF) ─────────────────────"
 
 # Sprint 4 추가 자산
-BGE_SERVER_SRC="$REPO_DIR/scripts/bge_m3_server.py"
-BGE_SERVER_TARGET="$SCRIPTS_DIR/bge_m3_server.py"
-BGE_PLIST_SRC="$REPO_DIR/plist/com.yonghaekim.bge-m3-mlx.plist"
-BGE_PLIST_TARGET="$HOME/Library/LaunchAgents/com.yonghaekim.bge-m3-mlx.plist"
+ARCTIC_SERVER_SRC="$REPO_DIR/scripts/arctic_ko_server.py"
+ARCTIC_SERVER_TARGET="$SCRIPTS_DIR/arctic_ko_server.py"
+ARCTIC_PLIST_SRC="$REPO_DIR/plist/com.yonghaekim.arctic-ko-mlx.plist"
+ARCTIC_PLIST_TARGET="$HOME/Library/LaunchAgents/com.yonghaekim.arctic-ko-mlx.plist"
 MEMORY_HOOK_SRC="$REPO_DIR/hooks/memory-recall.py"
 MEMORY_HOOK_TARGET="$HOOKS_DIR/memory-recall.py"
 SPRINT4_SRC=("$REPO_DIR/src/memory_indexer.py" "$REPO_DIR/src/memory_search.py")
-BGE_MODEL_DIR="$HOME/.cache/mlx-bge-m3"
+ARCTIC_MODEL_DIR="$HOME/.cache/mlx-arctic-ko"
 
 # 4.1 Python 의존성
 echo "→ Installing Python dependencies (sqlite-vec mlx-embeddings pyyaml numpy huggingface_hub)..."
@@ -169,17 +169,24 @@ else
   echo "  (warning: dependency install had warnings — Sprint 4 may not work)"
 fi
 
-# 4.2 BGE-M3 모델 다운로드 (이미 있으면 skip)
-if [ ! -f "$BGE_MODEL_DIR/model.safetensors" ]; then
-  echo "→ Downloading BGE-M3 MLX 4-bit model (~322MB, ~30s)..."
-  if python3 -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='mlx-community/bge-m3-mlx-4bit', local_dir='$BGE_MODEL_DIR')" 2>&1 | tail -3; then
-    echo "✓ BGE-M3 model at $BGE_MODEL_DIR"
-  else
-    echo "  ✗ model download failed — Sprint 4 hook will silently no-op"
-    echo "  retry: python3 -c \"from huggingface_hub import snapshot_download; snapshot_download(repo_id='mlx-community/bge-m3-mlx-4bit', local_dir='$BGE_MODEL_DIR')\""
-  fi
+# 4.2 Arctic-ko MLX 4bit 모델 (수동 변환 필요)
+# Sprint 9: dragonkue/snowflake-arctic-embed-l-v2.0-ko 원본을 MLX 4bit 양자화한
+# 로컬 모델 사용. mlx-community에 4bit 양자화본 미존재 — 사용자 직접 변환 필요.
+ARCTIC_MODEL_READY=0
+if [ -f "$ARCTIC_MODEL_DIR/model.safetensors" ]; then
+  echo "✓ Arctic-ko model already present at $ARCTIC_MODEL_DIR"
+  ARCTIC_MODEL_READY=1
 else
-  echo "✓ BGE-M3 model already present at $BGE_MODEL_DIR"
+  echo ""
+  echo "  ⚠ Arctic-ko MLX 4bit 모델이 $ARCTIC_MODEL_DIR 에 없습니다."
+  echo "  수동 변환 절차 (1회만 필요):"
+  echo "    1) pip install --user mlx_embeddings huggingface_hub"
+  echo "    2) python3 -c \"from mlx_embeddings.utils import convert; convert('dragonkue/snowflake-arctic-embed-l-v2.0-ko', mlx_path='$ARCTIC_MODEL_DIR', quantize=True, q_bits=4)\""
+  echo "    3) ls $ARCTIC_MODEL_DIR/model.safetensors  # 확인"
+  echo "    4) 본 installer 재실행"
+  echo "  자세한 안내: README.md 의 'Arctic-ko 모델 변환' 섹션."
+  echo "  (모델 없으면 memory-recall hook 은 silent no-op)"
+  echo ""
 fi
 
 # 4.3 스크립트 + 서버 배포
@@ -189,9 +196,9 @@ for f in "${SPRINT4_SRC[@]}"; do
     chmod +x "$SCRIPTS_DIR/$(basename "$f")"
   fi
 done
-if [ -f "$BGE_SERVER_SRC" ]; then
-  cp "$BGE_SERVER_SRC" "$BGE_SERVER_TARGET"
-  chmod +x "$BGE_SERVER_TARGET"
+if [ -f "$ARCTIC_SERVER_SRC" ]; then
+  cp "$ARCTIC_SERVER_SRC" "$ARCTIC_SERVER_TARGET"
+  chmod +x "$ARCTIC_SERVER_TARGET"
 fi
 echo "✓ deployed Sprint 4 scripts to $SCRIPTS_DIR"
 
@@ -201,12 +208,20 @@ if [ -f "$REPO_DIR/src/memory_review_cli.py" ]; then
   chmod +x "$SCRIPTS_DIR/memory_review_cli.py"
 fi
 
-# 4.4 BGE-M3 launchd plist
-if [ -f "$BGE_PLIST_SRC" ]; then
-  cp "$BGE_PLIST_SRC" "$BGE_PLIST_TARGET"
-  launchctl unload "$BGE_PLIST_TARGET" >/dev/null 2>&1 || true
-  launchctl load -w "$BGE_PLIST_TARGET" 2>/dev/null || true
-  echo "✓ BGE-M3 launchd service loaded (port 8081)"
+# 4.4a 옛 BGE-M3 plist migration (Sprint 9 이전 설치자 → Arctic-ko 전환)
+OLD_BGE_PLIST="$HOME/Library/LaunchAgents/com.yonghaekim.bge-m3-mlx.plist"
+if [ -f "$OLD_BGE_PLIST" ]; then
+  launchctl unload "$OLD_BGE_PLIST" >/dev/null 2>&1 || true
+  rm -f "$OLD_BGE_PLIST"
+  echo "✓ migrated: removed legacy BGE-M3 plist ($OLD_BGE_PLIST)"
+fi
+
+# 4.4 Arctic-ko launchd plist
+if [ -f "$ARCTIC_PLIST_SRC" ]; then
+  cp "$ARCTIC_PLIST_SRC" "$ARCTIC_PLIST_TARGET"
+  launchctl unload "$ARCTIC_PLIST_TARGET" >/dev/null 2>&1 || true
+  launchctl load -w "$ARCTIC_PLIST_TARGET" 2>/dev/null || true
+  echo "✓ Arctic-ko launchd service loaded (port 8081)"
 fi
 
 # 4.5 hook 배포
@@ -216,8 +231,8 @@ if [ -f "$MEMORY_HOOK_SRC" ]; then
   echo "✓ memory-recall hook at $MEMORY_HOOK_TARGET"
 fi
 
-# 4.6 헬스체크 (BGE-M3 모델 로딩 대기 ~10초)
-echo "→ Waiting for BGE-M3 to load (up to 30s)..."
+# 4.6 헬스체크 (Arctic-ko 모델 로딩 대기 ~10초)
+echo "→ Waiting for Arctic-ko to load (up to 30s)..."
 HEALTH_OK=0
 for i in $(seq 1 15); do
   if curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1:8081/health 2>/dev/null | grep -q "200"; then
@@ -228,10 +243,10 @@ for i in $(seq 1 15); do
 done
 if [ "$HEALTH_OK" = "1" ]; then
   DIM=$(curl -sS http://127.0.0.1:8081/health | python3 -c "import json,sys; print(json.load(sys.stdin)['dim'])" 2>/dev/null || echo "?")
-  echo "✓ BGE-M3 health: OK (dim=$DIM)"
+  echo "✓ Arctic-ko health: OK (dim=$DIM)"
 else
-  echo "  ✗ BGE-M3 health check failed — hook will silently no-op"
-  echo "  diagnose: tail ~/Library/Logs/bge-m3-mlx.err"
+  echo "  ✗ Arctic-ko health check failed — hook will silently no-op"
+  echo "  diagnose: tail ~/Library/Logs/arctic-ko-mlx.err"
 fi
 
 # 4.7 settings.json UserPromptSubmit hook 등록 (idempotent, 기존 hook 보존)
@@ -259,8 +274,8 @@ else:
     print("✓ UserPromptSubmit hook already present — skip")
 PY
 
-# 4.8 초기 인덱싱
-if [ "$HEALTH_OK" = "1" ]; then
+# 4.8 초기 인덱싱 (모델 + health 둘 다 확보돼야 진행)
+if [ "$HEALTH_OK" = "1" ] && [ "$ARCTIC_MODEL_READY" = "1" ]; then
   echo "→ Initial memory indexing (may take ~30-60s for ~100 memories)..."
   if python3 -c "
 import sys
