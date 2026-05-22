@@ -352,11 +352,15 @@ CREATE VIRTUAL TABLE memories_fts USING fts5(
     tokenize='unicode61 remove_diacritics 2'
 );
 
-CREATE VIRTUAL TABLE memories_vec USING vec0(
-    rowid     INTEGER PRIMARY KEY,
-    kind      TEXT,                  -- 'body' | 'description'
-    path      TEXT,
-    embedding FLOAT[1024]
+-- NOTE (2026-05-22 환경 발견): macOS 시스템 Python 3.10의 sqlite3가
+-- enable_load_extension을 지원하지 않아 sqlite-vec(vec0) 사용 불가.
+-- pysqlite3-binary도 arm64 wheel 없음. → BLOB + Python cosine 폴백.
+-- 메모리 자산이 ~100개라 인덱스 검색의 O(log n) 이점은 의미 없음.
+CREATE TABLE memories_vec (
+    rowid     INTEGER PRIMARY KEY AUTOINCREMENT,
+    path      TEXT NOT NULL,
+    kind      TEXT NOT NULL,         -- 'body' | 'description'
+    embedding BLOB NOT NULL          -- float32 numpy bytes, 1024 * 4 = 4096 bytes
 );
 
 CREATE INDEX idx_memories_vec_path ON memories_vec(path);
