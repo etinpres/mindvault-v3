@@ -16,12 +16,15 @@ from pathlib import Path
 DATA_DIR = Path("/Users/yonghaekim/.claude/mindvault-v2")
 DEBUG_LOG = DATA_DIR / "debug.log"
 METRICS_LOG = DATA_DIR / "metrics.jsonl"
-MIN_PROMPT_LEN = 3
-# 200ms target. 250 cap to absorb cold-start variance (mlx 첫 forward + sqlite
-# open + 104 .md mtime stat). Warm 평균 ~130ms.
+MIN_PROMPT_LEN = 4  # 너무 짧은 키워드는 skip. 잡담은 raw cosine 게이트가 차단.
 HARD_TIMEOUT_MS = 250
 SCORE_THRESHOLD = 0.65
-TOP_K = 3
+TOP_K = 1  # 절대 우수한 1건만. 매번 3건 회수는 V1 토큰 낭비 패턴.
+RAW_COSINE_MIN_DEFAULT = 0.79  # raw vec cosine 절대 게이트 (V1 헛스윙 차단)
+RAW_COSINE_MIN_HINTED = 0.76   # 회수 단서어 있을 때만 살짝 완화
+
+# 회수 의도 명확 키워드 (있으면 임계값 ↓)
+RECALL_HINTS = ("예전에", "그때", "이전에", "지난번", "어제", "전에", "옛날에", "저번에")
 MEMORY_DIRS = [
     Path("/Users/yonghaekim/.claude/projects/-Users-yonghaekim/memory"),
     Path("/Users/yonghaekim/.claude/projects/-Users-yonghaekim-my-folder/memory"),
@@ -161,12 +164,20 @@ def main() -> int:
 
         from memory_search import recall_memory  # noqa: WPS433
 
+        # 회수 단서어 있으면 임계값 완화 (형 의도 명확)
+        has_hint = any(h in prompt for h in RECALL_HINTS)
+        raw_min = RAW_COSINE_MIN_HINTED if has_hint else RAW_COSINE_MIN_DEFAULT
+
         results = recall_memory(
-            prompt, top_k=TOP_K, score_threshold=SCORE_THRESHOLD
+            prompt,
+            top_k=TOP_K,
+            score_threshold=SCORE_THRESHOLD,
+            raw_cosine_min=raw_min,
         )
 
         elapsed_ms = int((time.time() - t0) * 1000)
         max_score = results[0]["score"] if results else 0.0
+        raw_top = results[0].get("raw_cosine", 0.0) if results else 0.0
         _metric({
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "kind": "recall",
@@ -174,6 +185,9 @@ def main() -> int:
             "elapsed_ms": elapsed_ms,
             "picked": len(results),
             "max_score": max_score,
+            "raw_top1_cosine": raw_top,
+            "raw_min": raw_min,
+            "has_hint": has_hint,
         })
         _debug(
             f"query_len={len(prompt)} picked={len(results)} elapsed_ms={elapsed_ms}"

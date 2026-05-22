@@ -30,8 +30,9 @@ DB_PATH = Path("/Users/yonghaekim/.claude/mindvault-v2/index.db")
 DEBUG_LOG = Path("/Users/yonghaekim/.claude/mindvault-v2/debug.log")
 RRF_K = 60
 DESCRIPTION_WEIGHT = 1.5
-DEFAULT_TOP_K = 3
-DEFAULT_THRESHOLD = 0.65
+DEFAULT_TOP_K = 1  # 보수적: 절대 우수한 1건만. V1 토큰 낭비 회피.
+DEFAULT_THRESHOLD = 0.65  # normalize 후 점수 게이트 (보조)
+DEFAULT_RAW_COSINE_MIN = 0.78  # raw vec cosine 절대 게이트 — V1-style 헛스윙 차단
 EMBED_DIM = 1024
 SNIPPET_CHARS = 160
 
@@ -119,16 +120,16 @@ def _fts_top_k(
 
 def _vec_top_k(
     conn: sqlite3.Connection, query_vec: list[float], limit: int = 10
-) -> list[tuple[str, int, str]]:
+) -> tuple[list[tuple[str, int, str]], dict[str, float]]:
     """BLOB에 저장된 모든 벡터를 numpy로 로드 → cosine top-k.
-    반환: [(path, rank, kind), ...] — rank는 1부터.
+    반환: ([(path, rank, kind), ...], {path: max_raw_cosine})
+    raw_cosine_map은 V1-style 토큰 낭비 차단을 위한 absolute relevance 게이트용.
     """
     rows = list(
         conn.execute("SELECT path, kind, embedding FROM memories_vec")
     )
     if not rows:
-        return []
-    # 모든 임베딩을 (N, 1024) matrix로
+        return [], {}
     mat = np.zeros((len(rows), EMBED_DIM), dtype=np.float32)
     meta: list[tuple[str, str]] = []
     for i, r in enumerate(rows):
@@ -138,20 +139,25 @@ def _vec_top_k(
             continue
         mat[i] = arr
         meta.append((r["path"], r["kind"]))
-    # 쿼리 정규화 (mean-pooled BGE-M3는 L2-normalized가 아님 → cosine 위해 정규화)
     q = np.asarray(query_vec, dtype=np.float32)
     q_norm = np.linalg.norm(q)
     if q_norm == 0:
-        return []
+        return [], {}
     q = q / q_norm
-    # row normalize
     norms = np.linalg.norm(mat, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     mat_norm = mat / norms
-    sims = mat_norm @ q  # (N,)
-    # top-k indices (높은 유사도 = 낮은 distance)
+    sims = mat_norm @ q  # (N,) raw cosine [0..1]
     idx_sorted = np.argsort(-sims)[:limit]
-    return [(meta[i][0], rank + 1, meta[i][1]) for rank, i in enumerate(idx_sorted)]
+    results = [(meta[i][0], rank + 1, meta[i][1]) for rank, i in enumerate(idx_sorted)]
+    # path별 최대 raw cosine (body/description 둘 중 큰 값) — 게이트용
+    raw_map: dict[str, float] = {}
+    for i in idx_sorted:
+        path = meta[i][0]
+        sim = float(sims[i])
+        if sim > raw_map.get(path, -1.0):
+            raw_map[path] = sim
+    return results, raw_map
 
 
 def _snippet(conn: sqlite3.Connection, path: str) -> str:
@@ -168,10 +174,14 @@ def recall_memory(
     query: str,
     top_k: int = DEFAULT_TOP_K,
     score_threshold: float = DEFAULT_THRESHOLD,
+    raw_cosine_min: float = DEFAULT_RAW_COSINE_MIN,
     db_path: Path | None = None,
 ) -> list[dict]:
-    """hybrid RRF로 memory/*.md 검색.
-    반환: [{"path","name","description","snippet","score","source"}, ...]
+    """hybrid RRF + raw vec cosine 게이트 memory 검색.
+
+    raw_cosine_min: vec top-1의 raw cosine이 이 값 미만이면 결과 0건.
+                    V1 토큰 낭비 회피 (BGE-M3는 잡담에도 0.6-0.75 매칭 → 0.78+ 만 통과).
+    반환: [{"path","name","description","snippet","score","raw_cosine","source"}, ...]
     """
     if db_path is None:
         db_path = DB_PATH
@@ -189,26 +199,34 @@ def recall_memory(
         fts_rows = _fts_top_k(conn, query, limit=10)
 
         vec_rows: list[tuple[str, int, str]] = []
+        raw_cosine_map: dict[str, float] = {}
         qvec = embed_text(query)
         if qvec is not None:
-            vec_rows = _vec_top_k(conn, qvec, limit=10)
+            vec_rows, raw_cosine_map = _vec_top_k(conn, qvec, limit=10)
 
         if not vec_rows and not fts_rows:
             _debug(f"no candidates query={query!r}")
             return []
 
+        top1_raw = max(raw_cosine_map.values()) if raw_cosine_map else 0.0
         combined = rrf_combine(vec_rows, fts_rows, k=RRF_K)
         normalize_scores(combined)
 
-        kept = [
-            (path, info) for path, info in combined.items()
-            if info["score"] >= score_threshold
-        ]
-        kept.sort(key=lambda x: x[1]["score"], reverse=True)
+        # raw cosine 게이트: vec-only hit + raw < min은 차단. fts hit은 면제 (BM25 보장).
+        # normalize score는 ranking용 보조 — 절대 차단 X (raw 통과한 path끼리만 비교).
+        kept = []
+        for path, info in combined.items():
+            raw = raw_cosine_map.get(path, 0.0)
+            if raw_cosine_min > 0 and raw < raw_cosine_min and "fts" not in info["source"]:
+                continue
+            # normalize score는 ranking signal로만 사용
+            kept.append((path, info, raw))
+        # 정렬: raw cosine 우선 (절대 관련도) → 동률 시 normalize score
+        kept.sort(key=lambda x: (x[2], x[1]["score"]), reverse=True)
         kept = kept[:top_k]
 
         results = []
-        for path, info in kept:
+        for path, info, raw in kept:
             meta = conn.execute(
                 "SELECT name, description FROM memories WHERE path=?", (path,)
             ).fetchone()
@@ -218,14 +236,16 @@ def recall_memory(
                 "description": meta["description"] if meta else "",
                 "snippet": _snippet(conn, path),
                 "score": round(info["score"], 4),
+                "raw_cosine": round(raw, 4),
                 "source": info["source"],
             })
 
         elapsed = int((time.time() - t0) * 1000)
-        rrf_top = [p[:40] for p, _ in kept]
+        rrf_top = [p[:40] for p, _, _ in kept]
         _debug(
             f"recall query={query!r} vec={len(vec_rows)} fts={len(fts_rows)} "
-            f"picked={len(results)} rrf_top={rrf_top} elapsed_ms={elapsed}"
+            f"top1_raw={top1_raw:.3f} picked={len(results)} "
+            f"rrf_top={rrf_top} elapsed_ms={elapsed}"
         )
         return results
     except Exception as e:
