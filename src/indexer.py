@@ -13,12 +13,31 @@ import time
 import traceback
 from pathlib import Path
 
-PROJECTS_DIR = Path("/Users/yonghaekim/.claude/projects/-Users-yonghaekim-my-folder")
+PROJECTS_ROOT = Path("/Users/yonghaekim/.claude/projects")
+# Sprint 6: 멀티 디렉토리 스캔. 형이 cd 위치에 따라 별도 projects 폴더가
+# 자동 생성되므로 (~ = -Users-yonghaekim, ~/my-folder = -Users-yonghaekim-my-folder,
+# 각 앱 = -Users-yonghaekim-my-folder-apps-*) 모든 하위 디렉토리의 *.jsonl을 흡수.
+# 빈 디렉토리는 자연스럽게 skip.
+# 하위 호환: PROJECTS_DIR 그대로 import하는 코드를 위해 옛 default 유지.
+PROJECTS_DIR = PROJECTS_ROOT / "-Users-yonghaekim-my-folder"
+
+
+def iter_jsonl_paths(root: Path = PROJECTS_ROOT):
+    """root 하위 모든 디렉토리에서 *.jsonl yield. mtime-stable 순서."""
+    if not root.is_dir():
+        return
+    for p in root.glob("*/*.jsonl"):
+        yield p
 DATA_DIR = Path("/Users/yonghaekim/.claude/mindvault-v2")
 DB_PATH = DATA_DIR / "index.db"
 DEBUG_LOG = DATA_DIR / "debug.log"
 SIGNATURE = "# 지난 세션 요약 (MindVault v2)"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+# Sprint 6: 임베딩은 첫 N turn(user/assistant) 기준. 세션 의도는 앞쪽에 몰리고
+# 잡담 세션은 첫 N turn도 짧고 약하므로 신호/노이즈가 자연스럽게 분리된다.
+# SESSION_EMBED_CHARS는 안전망 — 한 turn에 거대한 paste가 들어와도 폭주 방지.
+HEAD_TURNS_EMBED = 4
+SESSION_EMBED_CHARS = 2_000
 
 SECRET_PATTERNS = [
     (re.compile(r"sk-[a-zA-Z0-9_-]{20,}"), "[REDACTED_KEY]"),
@@ -26,6 +45,31 @@ SECRET_PATTERNS = [
     (re.compile(r"Bearer\s+[a-zA-Z0-9._-]{20,}"), "Bearer [REDACTED]"),
     (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED_AWS]"),
 ]
+
+# Sprint 6: 임베딩 노이즈 제거용 메타 prefix. 첫 turn에 caveat/CLI stdout 등이
+# 본문 신호를 묻어서 잡담 매칭이 일어나는 현상 차단. FTS body에는 영향 X
+# (extract_head_turns_body에만 적용 — turn-단위 정제).
+META_BLOCK_PATTERNS = [
+    re.compile(
+        r"<local-command-(caveat|stdout|stderr)>.*?</local-command-\1>",
+        re.DOTALL,
+    ),
+    re.compile(
+        r"<command-(name|message|args|stdout|stderr)>.*?</command-\1>",
+        re.DOTALL,
+    ),
+    re.compile(r"^\[텔레그램 수신 메시지\]\s*", re.MULTILINE),
+    re.compile(r"^Caveat: The messages below.*$", re.MULTILINE),
+    re.compile(r"^Catch you later!\s*$", re.MULTILINE),
+]
+
+
+def _strip_meta_prefixes(text: str) -> str:
+    """임베딩용 메타 블록·prefix 제거. 빈 줄 압축."""
+    for pat in META_BLOCK_PATTERNS:
+        text = pat.sub("", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def _debug(msg: str) -> None:
@@ -65,6 +109,47 @@ def extract_text_from_content(content) -> str:
                 continue
             parts.append(t)
     return "\n".join(p for p in parts if p)
+
+
+def extract_head_turns_body(
+    jsonl_path: Path, n_turns: int = HEAD_TURNS_EMBED
+) -> str:
+    """첫 N개 user/assistant turn만 concat (임베딩 전용).
+
+    세션 의도가 앞쪽에 몰리는 패턴 활용. 잡담 세션은 첫 N turn이 짧고 약해
+    raw cosine이 자연스럽게 낮아진다. _is_system_reminder / SIGNATURE 필터링은
+    extract_full_body와 동일하게 적용 (hook 주입 텍스트가 첫 turn에 끼는 케이스).
+    """
+    parts: list[str] = []
+    turns = 0
+    try:
+        with jsonl_path.open() as f:
+            for line in f:
+                if turns >= n_turns:
+                    break
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                t = d.get("type")
+                if t not in ("user", "assistant"):
+                    continue
+                msg = d.get("message") or {}
+                content = msg.get("content")
+                text = extract_text_from_content(content).strip()
+                if not text or SIGNATURE in text:
+                    continue
+                text = _strip_meta_prefixes(redact(text))
+                if not text:
+                    # meta-only turn (caveat 또는 stdout만 있는 경우) → 카운트 안 함
+                    continue
+                prefix = "U:" if t == "user" else "A:"
+                parts.append(f"{prefix} {text}")
+                turns += 1
+    except OSError as e:
+        _debug(f"head-turns read fail {jsonl_path.name}: {e}")
+        return ""
+    return "\n".join(parts)
 
 
 def extract_full_body(jsonl_path: Path) -> tuple[str, str | None, str | None, int]:
@@ -148,6 +233,11 @@ def _init_db(conn: sqlite3.Connection) -> None:
             embedding BLOB NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_memories_vec_path ON memories_vec(path);
+        CREATE TABLE IF NOT EXISTS sessions_vec (
+            session_id TEXT PRIMARY KEY,
+            embedding BLOB NOT NULL,
+            indexed_at TEXT NOT NULL
+        );
         """
     )
     conn.execute(
@@ -177,16 +267,35 @@ def open_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
     return conn
 
 
+def _embed_session_from_path(jsonl_path: Path) -> bytes | None:
+    """jsonl 파일에서 첫 HEAD_TURNS_EMBED turn 추출 → BGE-M3 임베딩 → float32 bytes.
+
+    SESSION_EMBED_CHARS는 한 turn에 거대 paste가 들어왔을 때 폭주 방지용 안전망.
+    memory_indexer.embed_text 재사용 (BGE-M3 서버 호출 + dim 검증).
+    """
+    head_body = extract_head_turns_body(jsonl_path)
+    text = head_body[:SESSION_EMBED_CHARS].strip()
+    if not text:
+        return None
+    # 지연 import — sessions-only 인덱서가 BGE-M3 서버 없이도 동작하도록
+    from memory_indexer import embed_text, _vec_to_blob  # noqa: WPS433
+    vec = embed_text(text)
+    if vec is None:
+        return None
+    return _vec_to_blob(vec)
+
+
 def incremental_index(
-    projects_dir: Path = PROJECTS_DIR,
+    projects_root: Path = PROJECTS_ROOT,
     db_path: Path = DB_PATH,
 ) -> int:
-    if not projects_dir.is_dir():
-        _debug(f"projects dir missing: {projects_dir}")
+    if not projects_root.is_dir():
+        _debug(f"projects root missing: {projects_root}")
         return 0
     conn = open_db(db_path)
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
     updated = 0
+    vec_updated = 0
     try:
         existing: dict[str, tuple[int, int]] = {}
         for row in conn.execute(
@@ -194,7 +303,7 @@ def incremental_index(
         ):
             existing[row["session_id"]] = (row["mtime_ns"], row["size_bytes"])
 
-        for jsonl in projects_dir.glob("*.jsonl"):
+        for jsonl in iter_jsonl_paths(projects_root):
             sid = jsonl.stem
             try:
                 st = jsonl.stat()
@@ -227,21 +336,111 @@ def incremental_index(
                 "INSERT INTO sessions_fts(session_id, body) VALUES(?,?)",
                 (sid, body),
             )
+            # Sprint 5: 같은 트랜잭션에서 vec도 갱신. embed 실패해도 fts는 보존.
+            blob = _embed_session_from_path(jsonl)
+            if blob is not None:
+                conn.execute(
+                    """
+                    INSERT INTO sessions_vec(session_id, embedding, indexed_at)
+                    VALUES(?,?,?)
+                    ON CONFLICT(session_id) DO UPDATE SET
+                        embedding=excluded.embedding,
+                        indexed_at=excluded.indexed_at
+                    """,
+                    (sid, blob, now),
+                )
+                vec_updated += 1
             updated += 1
         conn.commit()
     finally:
         conn.close()
+    if vec_updated:
+        _debug(f"vec updated: {vec_updated}")
     return updated
 
 
+def backfill_session_vecs(db_path: Path = DB_PATH) -> dict[str, int]:
+    """sessions에는 있는데 sessions_vec에는 없는 session_id를 일괄 임베딩.
+
+    Sprint 5 1회성 마이그레이션 + 향후 BGE-M3 다운 중 누락된 vec 복구용.
+    반환: {"queued", "embedded", "failed"}.
+    """
+    counts = {"queued": 0, "embedded": 0, "failed": 0}
+    if not db_path.is_file():
+        return counts
+    conn = open_db(db_path)
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    try:
+        missing_rows = list(conn.execute(
+            """
+            SELECT s.session_id, s.file_path
+            FROM sessions s
+            LEFT JOIN sessions_vec v USING(session_id)
+            WHERE v.session_id IS NULL
+            """
+        ))
+        counts["queued"] = len(missing_rows)
+        if not missing_rows:
+            return counts
+        _debug(f"backfill queued: {len(missing_rows)} sessions")
+        for r in missing_rows:
+            sid = r["session_id"]
+            jsonl_path = Path(r["file_path"])
+            if not jsonl_path.is_file():
+                counts["failed"] += 1
+                continue
+            blob = _embed_session_from_path(jsonl_path)
+            if blob is None:
+                counts["failed"] += 1
+                continue
+            conn.execute(
+                """
+                INSERT INTO sessions_vec(session_id, embedding, indexed_at)
+                VALUES(?,?,?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    embedding=excluded.embedding,
+                    indexed_at=excluded.indexed_at
+                """,
+                (sid, blob, now),
+            )
+            counts["embedded"] += 1
+            # 매 20건마다 commit — 도중 중단되어도 진척 보존
+            if counts["embedded"] % 20 == 0:
+                conn.commit()
+                _debug(f"backfill progress: {counts}")
+        conn.commit()
+    finally:
+        conn.close()
+    _debug(f"backfill done: {counts}")
+    return counts
+
+
+def rebuild_session_vecs(db_path: Path = DB_PATH) -> dict[str, int]:
+    """sessions_vec 전체 truncate 후 새 전략으로 재구축.
+
+    Sprint 6 1회성 마이그레이션 — 기존 16K head char 임베딩과 새 head-N-turn
+    임베딩은 의미가 달라서 부분 백필로는 부족. sessions / sessions_fts는 그대로.
+    """
+    if not db_path.is_file():
+        return {"queued": 0, "embedded": 0, "failed": 0}
+    conn = open_db(db_path)
+    try:
+        conn.execute("DELETE FROM sessions_vec")
+        conn.commit()
+        _debug("sessions_vec truncated for rebuild")
+    finally:
+        conn.close()
+    return backfill_session_vecs(db_path)
+
+
 def full_rebuild(
-    projects_dir: Path = PROJECTS_DIR, db_path: Path = DB_PATH
+    projects_root: Path = PROJECTS_ROOT, db_path: Path = DB_PATH
 ) -> int:
     try:
         db_path.unlink()
     except FileNotFoundError:
         pass
-    return incremental_index(projects_dir, db_path)
+    return incremental_index(projects_root, db_path)
 
 
 def main() -> int:
@@ -249,6 +448,10 @@ def main() -> int:
     try:
         n = incremental_index()
         _debug(f"updated {n} sessions in {time.time() - t0:.2f}s")
+        # Sprint 5: incremental 이후 vec 누락분 백필 (1회성 마이그레이션 + 누락 복구)
+        bf = backfill_session_vecs()
+        if bf["queued"]:
+            _debug(f"backfill: {bf} (elapsed_total={time.time()-t0:.1f}s)")
     except Exception as e:
         _debug(f"FATAL {e}\n{traceback.format_exc()}")
     return 0
