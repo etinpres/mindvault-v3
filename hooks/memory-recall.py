@@ -33,12 +33,30 @@ MEMORY_DIRS = [
 # 디렉토리들도 watch해야 indexer trigger 일관. _spawn_reindex가 부모 env 보존하므로
 # indexer 본체는 자체적으로 같은 env 읽어 처리.
 import os as _os_envread
+_seen_dirs = {str(d) for d in MEMORY_DIRS}
 _extra = _os_envread.environ.get("MV2_EXTRA_MEMORY_DIRS", "").strip()
 if _extra:
     for _piece in _extra.split(":"):
         _piece = _piece.strip()
         if _piece:
-            MEMORY_DIRS.append(Path(_piece).expanduser())
+            _p = Path(_piece).expanduser()
+            if str(_p) not in _seen_dirs:
+                _seen_dirs.add(str(_p))
+                MEMORY_DIRS.append(_p)
+# Sprint 16: sources.json (영구 등록) 도 mtime watch 대상에 포함
+_SOURCES_CFG = DATA_DIR / "sources.json"
+try:
+    if _SOURCES_CFG.is_file():
+        import json as _json
+        _cfg = _json.loads(_SOURCES_CFG.read_text(encoding="utf-8"))
+        for _s in (_cfg.get("sources") or []):
+            if isinstance(_s, str) and _s:
+                _p = Path(_s).expanduser()
+                if str(_p) not in _seen_dirs:
+                    _seen_dirs.add(str(_p))
+                    MEMORY_DIRS.append(_p)
+except Exception:
+    pass
 INDEX_DB = DATA_DIR / "index.db"
 
 # import 경로 — production(배포본) + dev(repo) 둘 다 지원
@@ -180,10 +198,38 @@ def main() -> int:
             if d.is_dir() and str(d) not in sys.path:
                 sys.path.insert(0, str(d))
 
+        # Sprint 16: query intent classifier — chat/meta 는 회수 강제 skip.
+        # rule-based 라 latency 추가 ~0. 미import 실패 시 fallback (skip 없음).
+        intent_label = "unknown"
+        intent_match: list[str] = []
+        try:
+            from query_intent import classify, should_skip_recall  # noqa: WPS433
+            intent_obj = classify(prompt)
+            intent_label = intent_obj.intent
+            intent_match = list(intent_obj.matched)
+            if should_skip_recall(intent_obj):
+                _metric({
+                    "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "kind": "recall_skip",
+                    "reason": f"intent:{intent_label}",
+                    "intent": intent_label,
+                    "matched": intent_match,
+                    "query_len": len(prompt),
+                })
+                _debug(
+                    f"skip recall intent={intent_label} match={intent_match!r}"
+                )
+                return 0
+        except Exception as e:
+            _debug(f"intent classify skipped: {type(e).__name__}: {e}")
+
         from memory_search import recall_memory  # noqa: WPS433
 
         # 회수 단서어 있으면 임계값 완화 (형 의도 명확)
-        has_hint = any(h in prompt for h in RECALL_HINTS)
+        has_hint = (
+            intent_label == "recall"
+            or any(h in prompt for h in RECALL_HINTS)
+        )
         raw_min = RAW_COSINE_MIN_HINTED if has_hint else RAW_COSINE_MIN_DEFAULT
 
         results = recall_memory(
@@ -206,6 +252,8 @@ def main() -> int:
             "raw_top1_cosine": raw_top,
             "raw_min": raw_min,
             "has_hint": has_hint,
+            "intent": intent_label,
+            "intent_matched": intent_match[:3],
         })
         _debug(
             f"query_len={len(prompt)} picked={len(results)} elapsed_ms={elapsed_ms}"

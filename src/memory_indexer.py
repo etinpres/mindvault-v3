@@ -49,16 +49,53 @@ DEFAULT_MEMORY_DIRS = [
 ENV_EXTRA_DIRS = "MV2_EXTRA_MEMORY_DIRS"
 
 
-def _extra_memory_dirs() -> list[Path]:
-    raw = os.environ.get(ENV_EXTRA_DIRS, "").strip()
-    if not raw:
+SOURCES_CONFIG = DATA_DIR / "sources.json"
+# Sprint 16: env var(MV2_EXTRA_MEMORY_DIRS) + config file(sources.json) union.
+# env 는 shell session 한정, config 는 영구. sources_cli.py 로 add/remove/list.
+
+
+def _config_memory_dirs() -> list[Path]:
+    """sources.json 의 sources 항목 → Path 리스트. 실패 시 빈 리스트."""
+    if not SOURCES_CONFIG.is_file():
+        return []
+    try:
+        import json as _json
+        data = _json.loads(SOURCES_CONFIG.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    srcs = data.get("sources")
+    if not isinstance(srcs, list):
         return []
     out: list[Path] = []
-    for piece in raw.split(":"):
-        piece = piece.strip()
-        if not piece:
+    for s in srcs:
+        if not isinstance(s, str) or not s:
             continue
-        out.append(Path(piece).expanduser())
+        out.append(Path(s).expanduser())
+    return out
+
+
+def _extra_memory_dirs() -> list[Path]:
+    """env var + config file dirs union (env 우선·dedup)."""
+    out: list[Path] = []
+    seen: set[str] = set()
+    raw = os.environ.get(ENV_EXTRA_DIRS, "").strip()
+    if raw:
+        for piece in raw.split(":"):
+            piece = piece.strip()
+            if not piece:
+                continue
+            p = Path(piece).expanduser()
+            key = str(p)
+            if key not in seen:
+                seen.add(key)
+                out.append(p)
+    for p in _config_memory_dirs():
+        key = str(p)
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
     return out
 
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
