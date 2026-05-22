@@ -290,6 +290,13 @@ def _embed_session_from_path(jsonl_path: Path) -> bytes | None:
     return _vec_to_blob(vec)
 
 
+# Sprint 10: 매 session 처리 후 conn.commit() — long-running write transaction을
+# 짧은 트랜잭션 묶음으로 쪼개 동시 실행되는 hook의 write 대기 시간 최소화.
+# 추가로 embed_text(sub-conn embed_cache write 호출)와 메인 conn write의 인터리빙을
+# 분리: 매 iter 시작 시 메인이 idle → sub-conn cache_put이 BUSY 없이 진행.
+# WAL 모드라 commit 부하는 무시 가능 (수백 session 인덱싱 12s 수준).
+
+
 def incremental_index(
     projects_root: Path = PROJECTS_ROOT,
     db_path: Path = DB_PATH,
@@ -319,6 +326,10 @@ def incremental_index(
             body, first_ts, last_ts, turns = extract_full_body(jsonl)
             if not body:
                 continue
+            # Sprint 10: 임베딩(sub-conn embed_cache write 포함)을 메인 conn write보다
+            # 먼저 수행. 이전 commit 후 메인 conn이 idle인 동안 sub-conn이 충돌 없이
+            # cache_put 가능 → "embed cache put fail: database is locked" 해소.
+            blob = _embed_session_from_path(jsonl)
             conn.execute(
                 """
                 INSERT INTO sessions(session_id, file_path, mtime_ns, size_bytes,
@@ -341,8 +352,6 @@ def incremental_index(
                 "INSERT INTO sessions_fts(session_id, body) VALUES(?,?)",
                 (sid, body),
             )
-            # Sprint 5: 같은 트랜잭션에서 vec도 갱신. embed 실패해도 fts는 보존.
-            blob = _embed_session_from_path(jsonl)
             if blob is not None:
                 conn.execute(
                     """
@@ -356,6 +365,9 @@ def incremental_index(
                 )
                 vec_updated += 1
             updated += 1
+            # 매 1건 처리 후 commit — 메인 트랜잭션을 즉시 풀어 다음 iter의 임베딩
+            # (sub-conn cache write 포함)과 hook write가 BUSY 없이 진행. WAL이라 부하 미미.
+            conn.commit()
         conn.commit()
     finally:
         conn.close()
@@ -394,6 +406,8 @@ def backfill_session_vecs(db_path: Path = DB_PATH) -> dict[str, int]:
             if not jsonl_path.is_file():
                 counts["failed"] += 1
                 continue
+            # Sprint 10: 임베딩(sub-conn embed_cache write 포함)을 메인 INSERT 전에 수행.
+            # 매 iter 끝에 commit → 다음 iter 시작 시 메인 idle → cache_put BUSY 회피.
             blob = _embed_session_from_path(jsonl_path)
             if blob is None:
                 counts["failed"] += 1
@@ -409,11 +423,9 @@ def backfill_session_vecs(db_path: Path = DB_PATH) -> dict[str, int]:
                 (sid, blob, now),
             )
             counts["embedded"] += 1
-            # 매 20건마다 commit — 도중 중단되어도 진척 보존
+            conn.commit()
             if counts["embedded"] % 20 == 0:
-                conn.commit()
                 _debug(f"backfill progress: {counts}")
-        conn.commit()
     finally:
         conn.close()
     _debug(f"backfill done: {counts}")
@@ -441,10 +453,24 @@ def rebuild_session_vecs(db_path: Path = DB_PATH) -> dict[str, int]:
 def full_rebuild(
     projects_root: Path = PROJECTS_ROOT, db_path: Path = DB_PATH
 ) -> int:
+    """sessions_* 데이터만 비우고 재인덱싱 (memories_*, embed_cache 보존).
+
+    Sprint 10: 이전 구현은 db_path.unlink() — DB 통째 삭제 → memories_* 까지 동반 손실.
+    Sprint 9 임베딩 모델 swap 중 메모리 인덱스가 함께 날아간 사고의 직접 원인이라 제거.
+    rebuild_session_vecs와 일관된 패턴: 영향 테이블만 명시적으로 DELETE.
+
+    embed_cache는 의도적으로 보존. 모델 교체로 캐시 무효화가 필요하면
+    별도 호출 (e.g., `DELETE FROM embed_cache`) 또는 향후 truncate_embed_cache() 함수.
+    """
+    conn = open_db(db_path)
     try:
-        db_path.unlink()
-    except FileNotFoundError:
-        pass
+        conn.execute("DELETE FROM sessions")
+        conn.execute("DELETE FROM sessions_fts")
+        conn.execute("DELETE FROM sessions_vec")
+        conn.commit()
+        _debug("sessions_* truncated for full rebuild (memories_* preserved)")
+    finally:
+        conn.close()
     return incremental_index(projects_root, db_path)
 
 

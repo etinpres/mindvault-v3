@@ -24,7 +24,12 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
 from indexer import open_db  # noqa: E402
-from memory_indexer import embed_text  # noqa: E402
+from memory_indexer import embed_text as _embed_text_base  # noqa: E402
+
+
+def embed_text(query: str) -> list[float] | None:
+    """쿼리 임베딩 wrapper — Arctic-ko 학습 설정상 "query: " prefix 자동 부착."""
+    return _embed_text_base(query, kind="query")
 
 DB_PATH = Path("/Users/yonghaekim/.claude/mindvault-v2/index.db")
 DEBUG_LOG = Path("/Users/yonghaekim/.claude/mindvault-v2/debug.log")
@@ -32,7 +37,7 @@ RRF_K = 60
 DESCRIPTION_WEIGHT = 1.5
 DEFAULT_TOP_K = 1  # 보수적: 절대 우수한 1건만. V1 토큰 낭비 회피.
 DEFAULT_THRESHOLD = 0.65  # normalize 후 점수 게이트 (보조)
-DEFAULT_RAW_COSINE_MIN = 0.78  # raw vec cosine 절대 게이트 — V1-style 헛스윙 차단
+DEFAULT_RAW_COSINE_MIN = 0.40  # Sprint 9 Arctic-ko 분포에 맞춰 재튜닝 (도메인 0.44~0.61 vs 잡담 0.23~0.34, gap 0.26)
 EMBED_DIM = 1024
 SNIPPET_CHARS = 160
 # Sprint 7: top-k hit의 [[slug]] wikilink를 1-hop 확장. 메모리 그래프 신호 활용.

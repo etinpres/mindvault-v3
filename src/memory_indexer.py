@@ -32,9 +32,11 @@ DATA_DIR = Path("/Users/yonghaekim/.claude/mindvault-v2")
 DB_PATH = DATA_DIR / "index.db"
 DEBUG_LOG = DATA_DIR / "debug.log"
 LOCK_PATH = DATA_DIR / "memory-indexer.lock"
-BGE_M3_URL = "http://localhost:8081/embed"
-BGE_M3_TIMEOUT = 5  # seconds — 인덱싱 시점은 hook과 별개라 여유
+EMBED_URL = "http://localhost:8081/embed"
+EMBED_TIMEOUT = 5  # seconds — 인덱싱 시점은 hook과 별개라 여유
 EMBED_DIM = 1024
+# Sprint 9: BGE-M3 → Arctic-Embed-L v2.0 KO 교체. CLS pooling + L2 normalized.
+# 서버가 "kind" 필드를 사용 (query → "query: " prefix 자동 부착).
 DEFAULT_MEMORY_DIRS = [
     Path("/Users/yonghaekim/.claude/projects/-Users-yonghaekim/memory"),
     Path("/Users/yonghaekim/.claude/projects/-Users-yonghaekim-my-folder/memory"),
@@ -70,9 +72,13 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
     return fm, text[m.end():]
 
 
-def _embed_cache_get(query: str) -> list[float] | None:
-    """sqlite embed_cache 조회. miss시 None. DB 에러는 silent (cache는 옵션)."""
-    h = hashlib.sha256(query.encode("utf-8")).hexdigest()
+def _embed_cache_get(query: str, kind: str) -> list[float] | None:
+    """sqlite embed_cache 조회. cache key는 (kind, text) 묶음 — query/passage 분리.
+
+    Sprint 10: 메인 indexer 트랜잭션이 짧아졌으므로 timeout 기본값(5s) 복구.
+    이전엔 timeout=0.1로 self-deadlock 회피했으나 짧은 트랜잭션에선 BUSY 대기로 충분.
+    """
+    h = hashlib.sha256(f"{kind}\x00{query}".encode("utf-8")).hexdigest()
     try:
         conn = sqlite3.connect(str(DB_PATH))
         try:
@@ -91,9 +97,12 @@ def _embed_cache_get(query: str) -> list[float] | None:
     return arr.tolist()
 
 
-def _embed_cache_put(query: str, vector: list[float]) -> None:
-    """sqlite embed_cache 저장. 실패 silent (다음 호출이 다시 cache miss → BGE-M3)."""
-    h = hashlib.sha256(query.encode("utf-8")).hexdigest()
+def _embed_cache_put(query: str, kind: str, vector: list[float]) -> None:
+    """sqlite embed_cache 저장. cache key는 (kind, text) 묶음.
+
+    Sprint 10: timeout 기본값(5s) 복구 (위 _embed_cache_get 주석 참고).
+    """
+    h = hashlib.sha256(f"{kind}\x00{query}".encode("utf-8")).hexdigest()
     try:
         blob = np.asarray(vector, dtype=np.float32).tobytes()
         conn = sqlite3.connect(str(DB_PATH))
@@ -109,27 +118,33 @@ def _embed_cache_put(query: str, vector: list[float]) -> None:
         _debug(f"embed cache put fail: {e}")
 
 
-def embed_text(text: str) -> list[float] | None:
-    """BGE-M3 서버 호출 → 1024차원 dense 벡터. Sprint 8: sqlite embed_cache 적용.
+def embed_text(text: str, kind: str = "passage") -> list[float] | None:
+    """임베딩 서버 호출 → 1024차원 dense 벡터.
 
-    cache hit → 0ms 즉시 반환 (BGE-M3 skip). cache miss → BGE-M3 호출 → cache put.
-    BGE-M3 모델은 안 바뀌므로 TTL 없음 (모델 교체 시 embed_cache truncate 필요).
+    kind="passage" (기본): 문서/메모리 본문 임베딩.
+    kind="query": 검색 쿼리 임베딩. Arctic-Embed-L v2.0 KO 학습 설정상 서버가
+    "query: " prefix를 자동 부착한다.
+
+    Sprint 8 sqlite embed_cache 유지 — cache key는 (kind, text) 묶음이라 같은
+    텍스트라도 query/passage 분리 저장. 모델 교체 시 embed_cache truncate 필요.
     """
     text = (text or "").strip()
     if not text:
         return None
-    cached = _embed_cache_get(text)
+    if kind not in ("query", "passage"):
+        raise ValueError(f"kind must be 'query' or 'passage', got {kind!r}")
+    cached = _embed_cache_get(text, kind)
     if cached is not None:
         return cached
-    body = json.dumps({"input": text}).encode("utf-8")
+    body = json.dumps({"input": text, "kind": kind}).encode("utf-8")
     req = urllib.request.Request(
-        BGE_M3_URL,
+        EMBED_URL,
         data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=BGE_M3_TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=EMBED_TIMEOUT) as resp:
             data = json.loads(resp.read())
         vec = data.get("vector")
         if not isinstance(vec, list) or len(vec) != EMBED_DIM:
@@ -138,7 +153,7 @@ def embed_text(text: str) -> list[float] | None:
                 f"len={len(vec) if isinstance(vec, list) else '?'}"
             )
             return None
-        _embed_cache_put(text, vec)
+        _embed_cache_put(text, kind, vec)
         return vec
     except (TimeoutError, urllib.error.URLError, json.JSONDecodeError, OSError) as e:
         _debug(f"embed fail: {type(e).__name__}: {e}")
@@ -214,6 +229,13 @@ def _release_lock(fh) -> None:
         fh.close()
 
 
+# Sprint 10: 매 .md 처리 후 conn.commit() — long-running write transaction을
+# 짧은 트랜잭션 묶음으로 쪼개 hook(memory-recall.py 등) 동시 실행 시 lock 충돌 회피.
+# 추가로 embed_text(sub-conn embed_cache write 호출)는 메인 conn write 전에 수행하되,
+# 매 iter 끝에 commit해 다음 iter 시작 시 메인 idle → sub-conn cache_put BUSY 회피.
+# WAL 모드라 commit 부하 무시 (~100 memory 규모 풀 리빌드 단위 시간 미만).
+
+
 def incremental_index(
     memory_dirs: list[Path] | None = None,
     db_path: Path | None = None,
@@ -244,7 +266,7 @@ def incremental_index(
             present_files = _collect_md_files(memory_dirs)
             present_paths = {str(p) for p in present_files}
 
-            # 1) 삭제된 파일 정리
+            # 1) 삭제된 파일 정리 — 각 stale 처리 후 즉시 commit해 hook write 대기 최소화.
             for stale_path in existing.keys() - present_paths:
                 conn.execute("DELETE FROM memories WHERE path=?", (stale_path,))
                 conn.execute(
@@ -254,6 +276,7 @@ def incremental_index(
                     "DELETE FROM memories_vec WHERE path=?", (stale_path,)
                 )
                 counts["removed"] += 1
+                conn.commit()
 
             # 2) 신규/변경 파일 처리
             for p in present_files:
@@ -273,6 +296,8 @@ def incremental_index(
                 name = (fm.get("name") or p.stem)
                 description = (fm.get("description") or "")
 
+                # Sprint 10: 임베딩(sub-conn embed_cache write 포함)을 메인 conn write 전에 수행.
+                # 이전 iter의 commit 직후라 메인 conn이 idle → sub-conn cache_put BUSY 회피.
                 vec_body = embed_text(body) if body.strip() else None
                 vec_desc = embed_text(description) if description.strip() else None
 
@@ -311,8 +336,7 @@ def incremental_index(
                         (sp, "description", _vec_to_blob(vec_desc)),
                     )
                 counts["updated"] += 1
-
-            conn.commit()
+                conn.commit()
         finally:
             conn.close()
     finally:
