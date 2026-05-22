@@ -75,15 +75,69 @@ Sprint 4 (Layer 4 Memory Recall) 한 세션에 brainstorm → spec → plan → 
 
 ---
 
+## 2026-05-22 추가 fix (post Sprint 4 deploy)
+
+### Sprint 1 (SessionStart): Gemma → claude -p 전환
+
+- 형 새 세션 시작 5분+ 지연 (Gemma E4B reasoning cache MISS) → **17초** (claude -p --model haiku)
+- 2-stage (mini × 5 + unified) → **single-stage** (전체 세션 head/tail 한 prompt → 1 호출)
+- ThreadPoolExecutor 병렬화 시도했으나 NodeJS subprocess contention으로 더 느림 (1:32) → 단일 통합이 답
+- CACHE_VERSION v3 → v4-claude-p
+- shutil.which + nvm fallback PATH 보강
+- commit `9bfa695`
+
+### 무한 재귀 guard
+
+- `MV2_HOOK_RECURSION_GUARD=1` 환경변수 sentinel
+- session_memory.py의 call_gemma → claude -p subprocess 호출 시 env propagate
+- 모든 mv2 hook(session_memory.py, session_memory_end.py, memory-recall.py, async wrapper)이 이 변수 보면 즉시 exit 0
+- inner claude -p 안의 sub-session hook 전부 차단 → 무한 재귀 0
+
+### SessionEnd memory_extractor import 경로 fix
+
+- 원인: ~/.claude/hooks/에 배포돼도 memory_extractor.py는 ~/.claude/scripts/mindvault/에 있음
+- fix: sys.path에 둘 다 추가
+
+### Sprint 4 (Layer 4): V1 토큰 낭비 패턴 회피 (형 핵심 피드백)
+
+- 문제: min-max normalize → top-1 항상 1.0 → 매번 3건 헛스윙 회수 = V1 폐기 원인 재현
+- 진단: BGE-M3 너무 일반화 — 진짜 0.76-0.80 / 헛스윙 0.73-0.78 / 잡담 0.64-0.75 (raw cosine만으로 거의 구분 불가)
+- 설계:
+  - **raw vec cosine 절대 게이트** 도입 (default 0.79, hint 시 0.76)
+  - **TOP_K 3 → 1** (절대 우수 1건만)
+  - **MIN_PROMPT_LEN 3 → 4** (너무 짧은 키워드 skip)
+  - **회수 단서어 감지** ("예전에", "그때", "이전에" 등 8개) → 임계값 미세 완화
+  - **metrics.jsonl에 raw_top1_cosine 기록** (실 운영 튜닝용)
+  - **fts hit은 raw 게이트 면제** (BM25 정확 키워드 보장)
+  - normalize score는 ranking signal로만 (절대 차단 X)
+- 실 검증 (15개 쿼리):
+  - 8건 silent (잡담·메타·헛스윙 차단)
+  - 4건 정확 회수 (메일→sendmail, icloud→iCloud copy, 이전 스캐너→scan, 유튜브→유튜브 대본)
+  - 2건 인접 적중 (폰트→VS Code 폰트)
+  - 1건 헛스윙 (스캐너→sendmail, top_k=1이라 V1 패턴 아님)
+- commit `2c40c1e`
+
+### 검증 진행률 (verify.html 체크리스트)
+
+- ✓ 0: 새 세션 SessionStart 정상
+- ✓ 1: 자연어 비키워드 회수 (V1 fix 후)
+- ✓ 2: 잡담·단답 silent
+- ✓ 3: 체감 지연 (Sprint 1 17초 + Sprint 4 hook 150ms)
+- ✓ 4: /recall 양쪽 (memory 정확, sessions 부분 적중)
+- 미: 5 (/cs 통합), 6 (degradation)
+
+---
+
 ## 알려진 한계 (Sprint 5+ 작업)
 
-- **threshold 0.65 효과 약함** — min-max normalize로 top-1이 항상 1.0이라 absolute relevance 판단 불가. 외계어 쿼리도 결과 1개는 나옴. 실 사용 데이터로 raw cosine 기반 threshold 추가 검토.
+- **Sprint 2 sessions 섹션 헛스윙** — /recall 검증 시 sessions 결과에 도메인 무관 세션 포함됨. memory_search의 raw cosine 게이트 패턴을 Sprint 2 search.py에도 적용 필요. [Sprint 5 task #19]
+- **RAW_COSINE_MIN 0.79 휴리스틱** — 1-2주 실 운영 후 metrics.jsonl raw_top1_cosine 분포 분석으로 미세 튜닝. [task #20]
+- **CLAUDE.md `[메모리 회수 Ritual]` 폐기 보류** — hook hit rate 안정 검증 후. [task #21]
 - **시간 단위 청킹 미구현** — 5KB+ 파일에 한해 `[YYYY-MM-DD]` 단위 자동 분할.
 - **WikiLink (`[[name]]`) graph expansion 미구현** — top-k 결과의 wikilink 1-hop 확장.
 - **JSONL 세션 임베딩 인덱스 미구현** — 현재 FTS5만. Sprint 5+ 후보.
-- **CLAUDE.md `[메모리 회수 Ritual]` 폐기 보류** — hook hit rate 안정 검증 후.
 - **자동 테스트 회귀 안전망 약함** — CI 없음. 로컬 unittest로만.
-- **macOS 시스템 Python 3.10 sqlite3 미지원으로 sqlite-vec 사용 불가** — BLOB 폴백 유지. 미래 Python 3.11/12 + pysqlite3 wheel 나오면 마이그레이션 고려.
+- **macOS 시스템 Python 3.10 sqlite3 미지원으로 sqlite-vec 사용 불가** — BLOB 폴백 유지.
 
 ---
 
