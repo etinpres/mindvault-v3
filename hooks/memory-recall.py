@@ -17,11 +17,11 @@ DATA_DIR = Path("/Users/yonghaekim/.claude/mindvault-v2")
 DEBUG_LOG = DATA_DIR / "debug.log"
 METRICS_LOG = DATA_DIR / "metrics.jsonl"
 MIN_PROMPT_LEN = 4  # 너무 짧은 키워드는 skip. 잡담은 raw cosine 게이트가 차단.
-HARD_TIMEOUT_MS = 250
+HARD_TIMEOUT_MS = 400
 SCORE_THRESHOLD = 0.65
 TOP_K = 1  # 절대 우수한 1건만. 매번 3건 회수는 V1 토큰 낭비 패턴.
-RAW_COSINE_MIN_DEFAULT = 0.79  # raw vec cosine 절대 게이트 (V1 헛스윙 차단)
-RAW_COSINE_MIN_HINTED = 0.76   # 회수 단서어 있을 때만 살짝 완화
+RAW_COSINE_MIN_DEFAULT = 0.40  # Sprint 9 Arctic-ko 재튜닝 (도메인 0.44~0.61 vs 잡담 0.23~0.34)
+RAW_COSINE_MIN_HINTED = 0.32   # Sprint 9 Arctic-ko 분포 비례 완화
 
 # 회수 의도 명확 키워드 (있으면 임계값 ↓)
 RECALL_HINTS = ("예전에", "그때", "이전에", "지난번", "어제", "전에", "옛날에", "저번에")

@@ -332,7 +332,7 @@ def recall_memory(
         )
         return results
     except Exception as e:
-        _debug(f"recall FATAL: {e}\n{traceback.format_exc()}")
+        _debug(f"recall FATAL: {type(e).__name__}: {e}\n{traceback.format_exc()}")
         return []
     finally:
         conn.close()
