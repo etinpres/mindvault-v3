@@ -313,6 +313,11 @@ class TestFormatReport(unittest.TestCase):
             "recalls_with_pick": 7,
             "hit_rate": 0.7,
             "avg_internal_effort": 1.4,
+            "internal_effort": {
+                "avg": 1.4, "p50": 1.0, "p90": 4.0, "p99": 7.0, "max": 7,
+                "histogram": {"0": 3, "1": 4, "2-4": 2, "5+": 1},
+                "long_tail_ratio": 0.1,
+            },
             "false_positive_rate": 0.1,
             "false_positive_count": 1,
             "false_positive_known": 10,
@@ -323,6 +328,58 @@ class TestFormatReport(unittest.TestCase):
         out = format_report(summary)
         self.assertIn("hit rate: 70.0%", out)
         self.assertIn("self-affirming", out)
+        self.assertIn("p50=1", out)
+        self.assertIn("long-tail ratio", out)
+
+
+class TestEffortStats(unittest.TestCase):
+    def test_empty(self):
+        from self_eval import _effort_stats
+        r = _effort_stats([])
+        self.assertEqual(r["n"], 0)
+        self.assertEqual(r["avg"], 0.0)
+        self.assertEqual(r["long_tail_ratio"], 0.0)
+
+    def test_histogram_bucketing(self):
+        from self_eval import _effort_stats
+        # 0×5, 1×3, 3×2, 7×1, 12×1
+        vals = [0, 0, 0, 0, 0, 1, 1, 1, 3, 3, 7, 12]
+        r = _effort_stats(vals)
+        self.assertEqual(r["histogram"], {"0": 5, "1": 3, "2-4": 2, "5+": 2})
+        self.assertEqual(r["max"], 12)
+        self.assertEqual(r["long_tail_ratio"], 2 / 12)
+
+    def test_percentile_simple(self):
+        from self_eval import _effort_stats
+        vals = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  # n=10
+        r = _effort_stats(vals)
+        # nearest-rank: p50 → ceil(0.5*10)=5 → idx 4 → 4
+        self.assertEqual(r["p50"], 4.0)
+        # p90 → ceil(0.9*10)=9 → idx 8 → 8
+        self.assertEqual(r["p90"], 8.0)
+        self.assertEqual(r["p99"], 9.0)
+
+    def test_all_zero(self):
+        from self_eval import _effort_stats
+        r = _effort_stats([0, 0, 0])
+        self.assertEqual(r["avg"], 0.0)
+        self.assertEqual(r["p90"], 0.0)
+        self.assertEqual(r["long_tail_ratio"], 0.0)
+
+    def test_long_tail_heavy(self):
+        from self_eval import _effort_stats
+        # 5+ 비율 80%
+        r = _effort_stats([5, 6, 7, 8, 1])
+        self.assertAlmostEqual(r["long_tail_ratio"], 0.8)
+
+
+class TestPercentile(unittest.TestCase):
+    def test_edge_cases(self):
+        from self_eval import _percentile
+        self.assertEqual(_percentile([], 50), 0.0)
+        self.assertEqual(_percentile([7], 0), 7.0)
+        self.assertEqual(_percentile([7], 100), 7.0)
+        self.assertEqual(_percentile([1, 2, 3], 50), 2.0)
 
 
 if __name__ == "__main__":

@@ -311,8 +311,7 @@ def analyze_recent(
     all_turns.sort(key=lambda t: t["ts_unix"])
 
     per_event: list[dict] = []
-    effort_sum = 0
-    effort_n = 0
+    effort_values: list[int] = []
     fp_count = 0
     fp_known = 0
     for e in events:
@@ -323,8 +322,7 @@ def analyze_recent(
         ]
         post = measure_post_recall(window, ts_unix)
         effort = post["tool_use_count"]
-        effort_sum += effort
-        effort_n += 1
+        effort_values.append(effort)
         fp = False
         if post["next_user_text"]:
             fp = has_negative_cue(post["next_user_text"])
@@ -342,13 +340,15 @@ def analyze_recent(
             "false_positive": fp,
         })
 
+    effort_stats = _effort_stats(effort_values)
     return {
         "since_unix": since,
         "hours_back": hours_back,
         "total_recalls": total,
         "recalls_with_pick": picked,
         "hit_rate": (picked / total) if total else 0.0,
-        "avg_internal_effort": (effort_sum / effort_n) if effort_n else 0.0,
+        "avg_internal_effort": effort_stats["avg"],
+        "internal_effort": effort_stats,  # avg + histogram + p50/p90/p99 + long_tail_ratio
         "false_positive_known": fp_known,
         "false_positive_count": fp_count,
         "false_positive_rate": (fp_count / fp_known) if fp_known else 0.0,
@@ -358,14 +358,76 @@ def analyze_recent(
     }
 
 
+def _percentile(sorted_values: list[int], p: float) -> float:
+    """단순 nearest-rank percentile. p ∈ [0, 100]. 빈 list 면 0."""
+    if not sorted_values:
+        return 0.0
+    if p <= 0:
+        return float(sorted_values[0])
+    if p >= 100:
+        return float(sorted_values[-1])
+    # rank = ceil(p/100 * n) - 1 (0-indexed nearest-rank)
+    import math
+    rank = max(0, math.ceil(p / 100.0 * len(sorted_values)) - 1)
+    return float(sorted_values[rank])
+
+
+def _effort_stats(values: list[int]) -> dict:
+    """internal effort 분포 — avg + bucket histogram + percentile + long-tail 비율.
+
+    histogram bucket:
+    - 0: recall 후 추가 tool 0회 (회수 충분 신호)
+    - 1: tool 1회 (정상)
+    - 2-4: 평균적 후속 작업
+    - 5+: long-tail (회수 부족 가능성)
+    """
+    n = len(values)
+    if n == 0:
+        return {
+            "n": 0, "avg": 0.0,
+            "histogram": {"0": 0, "1": 0, "2-4": 0, "5+": 0},
+            "p50": 0.0, "p90": 0.0, "p99": 0.0,
+            "long_tail_ratio": 0.0, "max": 0,
+        }
+    avg = sum(values) / n
+    hist = {"0": 0, "1": 0, "2-4": 0, "5+": 0}
+    for v in values:
+        if v == 0:
+            hist["0"] += 1
+        elif v == 1:
+            hist["1"] += 1
+        elif v <= 4:
+            hist["2-4"] += 1
+        else:
+            hist["5+"] += 1
+    sorted_vals = sorted(values)
+    return {
+        "n": n,
+        "avg": avg,
+        "histogram": hist,
+        "p50": _percentile(sorted_vals, 50),
+        "p90": _percentile(sorted_vals, 90),
+        "p99": _percentile(sorted_vals, 99),
+        "long_tail_ratio": hist["5+"] / n,
+        "max": sorted_vals[-1],
+    }
+
+
 def format_report(summary: dict) -> str:
+    eff = summary.get("internal_effort") or {}
+    hist = eff.get("histogram", {})
     lines = [
         "# MindVault Self-eval Report",
         f"window: 최근 {summary['hours_back']}h, total_recalls={summary['total_recalls']}",
         f"hit rate: {summary['hit_rate']*100:.1f}% "
         f"({summary['recalls_with_pick']}/{summary['total_recalls']})",
-        f"avg internal effort (tool_use after recall): "
-        f"{summary['avg_internal_effort']:.2f}",
+        f"internal effort (tool_use after recall):",
+        f"  avg={eff.get('avg', summary.get('avg_internal_effort', 0)):.2f}  "
+        f"p50={eff.get('p50', 0):.0f}  p90={eff.get('p90', 0):.0f}  "
+        f"p99={eff.get('p99', 0):.0f}  max={eff.get('max', 0)}",
+        f"  histogram: 0={hist.get('0', 0)}  1={hist.get('1', 0)}  "
+        f"2-4={hist.get('2-4', 0)}  5+={hist.get('5+', 0)}",
+        f"  long-tail ratio (5+ tool_use): {eff.get('long_tail_ratio', 0)*100:.1f}%",
         f"false positive rate: {summary['false_positive_rate']*100:.1f}% "
         f"({summary['false_positive_count']}/{summary['false_positive_known']}, "
         f"표본=다음 user turn 식별 가능한 recall)",
