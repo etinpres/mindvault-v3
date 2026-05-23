@@ -144,6 +144,30 @@ class TestLoadTurns(unittest.TestCase):
         self.assertEqual(len(turns), 1)
         self.assertEqual(turns[0]["text"], "real user msg")
 
+    def test_skips_hook_injected_prefix(self):
+        """SessionStart hook 의 Gemma system prompt 가 user role 로 들어와도 skip."""
+        from self_eval import load_turns
+        p = self._write_jsonl([
+            {
+                "type": "user",
+                "timestamp": "2026-05-23T01:00:00Z",
+                "message": {"content": "다음은 Claude Code 세션 1개의 발췌입니다..."},
+            },
+            {
+                "type": "user",
+                "timestamp": "2026-05-23T01:00:01Z",
+                "message": {"content": "# 지난 세션 요약\n블라블라"},
+            },
+            {
+                "type": "user",
+                "timestamp": "2026-05-23T01:00:02Z",
+                "message": {"content": "진짜 user query"},
+            },
+        ])
+        turns = load_turns(p)
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["text"], "진짜 user query")
+
     def test_extracts_tool_uses(self):
         from self_eval import load_turns
         p = self._write_jsonl([
@@ -380,6 +404,101 @@ class TestPercentile(unittest.TestCase):
         self.assertEqual(_percentile([7], 0), 7.0)
         self.assertEqual(_percentile([7], 100), 7.0)
         self.assertEqual(_percentile([1, 2, 3], 50), 2.0)
+
+
+class TestIntentStats(unittest.TestCase):
+    def test_basic_distribution(self):
+        from self_eval import _intent_stats_from_events
+        recall = [
+            {"intent": "code", "picked": 1},
+            {"intent": "code", "picked": 0},
+            {"intent": "recall", "picked": 1},
+            {"intent": "unknown", "picked": 0},
+        ]
+        skip = [
+            {"intent": "chat"},
+            {"intent": "chat"},
+            {"intent": "meta"},
+        ]
+        s = _intent_stats_from_events(recall, skip)
+        self.assertEqual(s["total_attempts"], 4)
+        self.assertEqual(s["total_skipped"], 3)
+        # code: 2 attempts, 1 picked → hit_rate 50%
+        self.assertEqual(s["by_intent"]["code"]["recall_attempts"], 2)
+        self.assertEqual(s["by_intent"]["code"]["picked"], 1)
+        self.assertAlmostEqual(s["by_intent"]["code"]["hit_rate"], 0.5)
+        # chat: skip 만
+        self.assertEqual(s["by_intent"]["chat"]["skipped"], 2)
+        self.assertEqual(s["by_intent"]["chat"]["recall_attempts"], 0)
+        # 전체 skip_ratio = 3/7
+        self.assertAlmostEqual(s["skip_ratio_of_all"], 3 / 7)
+
+    def test_pre_sprint16_bucket(self):
+        """intent 필드 없는 옛 recall 은 'pre-sprint16' bucket 에 모임."""
+        from self_eval import _intent_stats_from_events
+        recall = [{"picked": 1}, {"picked": 0}]  # intent 누락
+        s = _intent_stats_from_events(recall, [])
+        self.assertIn("pre-sprint16", s["by_intent"])
+        self.assertEqual(s["by_intent"]["pre-sprint16"]["recall_attempts"], 2)
+
+    def test_empty(self):
+        from self_eval import _intent_stats_from_events
+        s = _intent_stats_from_events([], [])
+        self.assertEqual(s["total_attempts"], 0)
+        self.assertEqual(s["total_skipped"], 0)
+        self.assertEqual(s["skip_ratio_of_all"], 0.0)
+
+
+class TestLoadRecallEventsKindFilter(unittest.TestCase):
+    def test_filters_by_kinds_tuple(self):
+        from self_eval import load_recall_events
+        f = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".jsonl", delete=False, encoding="utf-8"
+        )
+        for d in [
+            {"ts": "2026-05-23T01:00:00Z", "kind": "recall"},
+            {"ts": "2026-05-23T01:00:01Z", "kind": "recall_skip"},
+            {"ts": "2026-05-23T01:00:02Z", "kind": "recall"},
+        ]:
+            f.write(json.dumps(d) + "\n")
+        f.close()
+        only_recall = load_recall_events(Path(f.name))
+        only_skip = load_recall_events(Path(f.name), kinds=("recall_skip",))
+        self.assertEqual(len(only_recall), 2)
+        self.assertEqual(len(only_skip), 1)
+        self.assertEqual(only_skip[0]["kind"], "recall_skip")
+
+
+class TestClassifyUserTurns(unittest.TestCase):
+    def test_classifies_and_buckets(self):
+        from self_eval import classify_user_turns
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "s1").mkdir()
+            jsonl = root / "s1" / "abc.jsonl"
+            jsonl.write_text(
+                json.dumps({
+                    "type": "user", "timestamp": "2099-01-01T00:00:00Z",
+                    "message": {"content": "안녕하세요"},
+                }) + "\n"
+                + json.dumps({
+                    "type": "user", "timestamp": "2099-01-01T00:00:01Z",
+                    "message": {"content": "이 함수 고쳐줘"},
+                }) + "\n"
+                + json.dumps({
+                    "type": "user", "timestamp": "2099-01-01T00:00:02Z",
+                    "message": {"content": "예전에 했던 거 기억나"},
+                }) + "\n",
+                encoding="utf-8",
+            )
+            out = classify_user_turns(
+                projects_root=root, hours_back=24 * 365 * 100
+            )
+            self.assertEqual(out["total_user_turns_examined"], 3)
+            by = out["by_intent"]
+            self.assertEqual(by["chat"]["count"], 1)
+            self.assertEqual(by["code"]["count"], 1)
+            self.assertEqual(by["recall"]["count"], 1)
 
 
 if __name__ == "__main__":

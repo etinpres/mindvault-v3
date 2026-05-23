@@ -82,8 +82,13 @@ def _parse_ts(ts: str) -> float | None:
 def load_recall_events(
     metrics_path: Path = DEFAULT_METRICS,
     since_unix: float | None = None,
+    kinds: tuple[str, ...] = ("recall",),
 ) -> list[dict]:
-    """metrics.jsonl 의 kind=recall 이벤트만 시간순. since_unix 이후만."""
+    """metrics.jsonl 의 kind ∈ kinds 이벤트만 시간순. since_unix 이후만.
+
+    Sprint 16 이후 hook 가 'recall_skip' 도 기록 (chat/meta 차단). 분류 분포 분석
+    시 양쪽 모두 필요해 kinds tuple 로 확장.
+    """
     out: list[dict] = []
     if not metrics_path.is_file():
         return out
@@ -97,7 +102,7 @@ def load_recall_events(
                     d = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if d.get("kind") != "recall":
+                if d.get("kind") not in kinds:
                     continue
                 ts_unix = _parse_ts(d.get("ts", ""))
                 if ts_unix is None:
@@ -111,6 +116,107 @@ def load_recall_events(
         return []
     out.sort(key=lambda d: d["_ts_unix"])
     return out
+
+
+def _intent_stats_from_events(
+    recall_events: list[dict], skip_events: list[dict]
+) -> dict:
+    """metrics.jsonl 의 intent 필드 기반 운영 분포.
+
+    - recall_events: kind=recall (분류기 통과해 회수 시도)
+    - skip_events: kind=recall_skip (chat/meta 강제 차단)
+
+    Sprint 16 이전 recall 은 intent 필드 없음 → 'pre-sprint16' bucket.
+    """
+    by_intent: dict[str, dict] = {}
+    for e in recall_events:
+        intent = e.get("intent") or "pre-sprint16"
+        b = by_intent.setdefault(
+            intent, {"recall_attempts": 0, "picked": 0, "skipped": 0}
+        )
+        b["recall_attempts"] += 1
+        if (e.get("picked") or 0) > 0:
+            b["picked"] += 1
+    for e in skip_events:
+        intent = e.get("intent") or "unknown_skip"
+        b = by_intent.setdefault(
+            intent, {"recall_attempts": 0, "picked": 0, "skipped": 0}
+        )
+        b["skipped"] += 1
+    # per-intent hit_rate (recall_attempts 기준)
+    out = {}
+    total_skip = sum(v["skipped"] for v in by_intent.values())
+    total_attempt = sum(v["recall_attempts"] for v in by_intent.values())
+    for intent, v in by_intent.items():
+        attempts = v["recall_attempts"]
+        hit_rate = (v["picked"] / attempts) if attempts else 0.0
+        total = attempts + v["skipped"]
+        out[intent] = {
+            **v,
+            "total": total,
+            "hit_rate": hit_rate,
+        }
+    return {
+        "by_intent": out,
+        "total_attempts": total_attempt,
+        "total_skipped": total_skip,
+        "skip_ratio_of_all": (
+            total_skip / (total_attempt + total_skip)
+            if (total_attempt + total_skip) else 0.0
+        ),
+    }
+
+
+def classify_user_turns(
+    projects_root: Path = DEFAULT_PROJECTS_ROOT,
+    hours_back: int = 168,
+    sample_per_intent: int = 5,
+) -> dict:
+    """모든 jsonl 의 user turn 에 query_intent.classify 돌려 분포 + 표본.
+
+    metrics.jsonl 은 Sprint 16 이후만 intent 기록. 그 이전 turn 까지 포함한 더 큰
+    표본 (~수개월) 으로 classifier 의 운영 분포 측정. ground-truth 라벨링은 아니지만
+    분포 sanity 와 의외 매칭 패턴 검출에 충분.
+    """
+    sys.path.insert(0, str(Path(__file__).parent))
+    try:
+        from query_intent import classify
+    except ImportError as e:
+        _debug(f"query_intent import fail: {e}")
+        return {"error": "query_intent module missing"}
+    since = time.time() - hours_back * 3600
+    counter: dict[str, list] = {
+        "chat": [], "meta": [], "code": [], "recall": [], "unknown": []
+    }
+    total_examined = 0
+    for jp in iter_session_jsonl_paths(projects_root):
+        for turn in load_turns(jp):
+            if turn["role"] != "user":
+                continue
+            if turn["ts_unix"] < since:
+                continue
+            text = turn["text"]
+            if len(text) < 4:  # hook MIN_PROMPT_LEN 와 정합
+                continue
+            r = classify(text)
+            total_examined += 1
+            counter.setdefault(r.intent, []).append({
+                "ts_unix": turn["ts_unix"],
+                "text": text[:100],
+                "matched": list(r.matched)[:3],
+            })
+    result = {
+        "hours_back": hours_back,
+        "total_user_turns_examined": total_examined,
+        "by_intent": {},
+    }
+    for intent, lst in counter.items():
+        result["by_intent"][intent] = {
+            "count": len(lst),
+            "ratio": (len(lst) / total_examined) if total_examined else 0.0,
+            "sample": lst[:sample_per_intent],
+        }
+    return result
 
 
 def iter_session_jsonl_paths(
@@ -141,6 +247,21 @@ def _extract_text(content) -> str:
 def _is_system_reminder(text: str) -> bool:
     head = (text or "").lstrip()[:64]
     return head.startswith("<system-reminder>") or head.startswith("<command-")
+
+
+# Sprint 15 #3: SessionStart / 세션 요약 hook 가 user role 로 jsonl 에 주입하는
+# Gemma·Claude system prompt 패턴. 형 직접 발화가 아니라 hook artifact 이므로
+# classifier 분포·false positive 측정 시 표본에서 제외해야 정확.
+HOOK_INJECTED_PREFIXES = (
+    "다음은 Claude Code 세션",
+    "# 지난 세션 요약",
+    "이 대화의 마지막 부분",
+)
+
+
+def _is_hook_injected(text: str) -> bool:
+    head = (text or "").lstrip()[:64]
+    return any(head.startswith(p) for p in HOOK_INJECTED_PREFIXES)
 
 
 def load_turns(jsonl_path: Path) -> list[dict]:
@@ -175,7 +296,9 @@ def load_turns(jsonl_path: Path) -> list[dict]:
                     for b in content:
                         if isinstance(b, dict) and b.get("type") == "tool_use":
                             tool_uses.append(b.get("name") or "unknown")
-                if t == "user" and _is_system_reminder(text):
+                if t == "user" and (
+                    _is_system_reminder(text) or _is_hook_injected(text)
+                ):
                     continue
                 turns.append({
                     "ts_unix": ts_unix,
@@ -300,8 +423,12 @@ def analyze_recent(
     """
     since = time.time() - hours_back * 3600
     events = load_recall_events(metrics_path, since_unix=since)
+    skip_events = load_recall_events(
+        metrics_path, since_unix=since, kinds=("recall_skip",)
+    )
     total = len(events)
     picked = sum(1 for e in events if (e.get("picked") or 0) > 0)
+    intent_stats = _intent_stats_from_events(events, skip_events)
 
     # 모든 session jsonl turn 로드 후 시간 정렬. 메모리 사용량 주의 — 형 환경
     # ~700 jsonl x 평균 200 turn = 14만 turn. dict 단순 list 면 ~50MB 정도. OK.
@@ -348,7 +475,8 @@ def analyze_recent(
         "recalls_with_pick": picked,
         "hit_rate": (picked / total) if total else 0.0,
         "avg_internal_effort": effort_stats["avg"],
-        "internal_effort": effort_stats,  # avg + histogram + p50/p90/p99 + long_tail_ratio
+        "internal_effort": effort_stats,
+        "intent_stats": intent_stats,  # hook 분류기 운영 분포
         "false_positive_known": fp_known,
         "false_positive_count": fp_count,
         "false_positive_rate": (fp_count / fp_known) if fp_known else 0.0,
@@ -431,9 +559,31 @@ def format_report(summary: dict) -> str:
         f"false positive rate: {summary['false_positive_rate']*100:.1f}% "
         f"({summary['false_positive_count']}/{summary['false_positive_known']}, "
         f"표본=다음 user turn 식별 가능한 recall)",
-        "",
-        f"self-affirming memory 후보: {len(summary['self_affirming_memories'])}건",
     ]
+    intent = summary.get("intent_stats") or {}
+    by_intent = intent.get("by_intent") or {}
+    if by_intent:
+        lines.append("")
+        lines.append(
+            f"intent 분포 (hook 분류기 운영 기록): "
+            f"total={intent.get('total_attempts', 0)} + "
+            f"skip={intent.get('total_skipped', 0)} | "
+            f"skip ratio={intent.get('skip_ratio_of_all', 0)*100:.1f}%"
+        )
+        for intent_name, v in sorted(
+            by_intent.items(), key=lambda kv: -kv[1].get("total", 0)
+        ):
+            lines.append(
+                f"  {intent_name:14s} total={v.get('total', 0):4d}  "
+                f"attempts={v.get('recall_attempts', 0):4d}  "
+                f"picked={v.get('picked', 0):4d}  "
+                f"skipped={v.get('skipped', 0):4d}  "
+                f"hit_rate={v.get('hit_rate', 0)*100:5.1f}%"
+            )
+    lines.append("")
+    lines.append(
+        f"self-affirming memory 후보: {len(summary['self_affirming_memories'])}건"
+    )
     for m in summary["self_affirming_memories"][:5]:
         lines.append(
             f"  - {m['name']} ({m['hit_count']} hits) — {m['sample_terms']}"
@@ -449,8 +599,19 @@ def main() -> int:
         "--projects-root", type=Path, default=DEFAULT_PROJECTS_ROOT
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--classifier-audit",
+        action="store_true",
+        help="user turn 전체에 classify 돌려 분포 + 표본 출력 (운영 검증)",
+    )
     args = parser.parse_args()
     try:
+        if args.classifier_audit:
+            out = classify_user_turns(
+                projects_root=args.projects_root, hours_back=args.hours
+            )
+            json.dump(out, sys.stdout, ensure_ascii=False, indent=2)
+            return 0
         summary = analyze_recent(
             metrics_path=args.metrics,
             projects_root=args.projects_root,
