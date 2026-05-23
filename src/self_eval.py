@@ -605,6 +605,7 @@ def analyze_recent(
     metrics_path: Path = DEFAULT_METRICS,
     projects_root: Path = DEFAULT_PROJECTS_ROOT,
     hours_back: int = 168,
+    use_cache: bool = False,
 ) -> dict:
     """최근 N 시간 recall 이벤트 분석 → metric dict.
 
@@ -626,12 +627,21 @@ def analyze_recent(
     picked = sum(1 for e in events if (e.get("picked") or 0) > 0)
     intent_stats = _intent_stats_from_events(events, skip_events)
 
-    # 모든 session jsonl turn 로드 후 시간 정렬. 메모리 사용량 주의 — 형 환경
-    # ~700 jsonl x 평균 200 turn = 14만 turn. dict 단순 list 면 ~50MB 정도. OK.
+    # Sprint NEXT-7: use_cache=True 면 turns_cache 가 incremental sqlite 인덱스 경유
+    # → ~50s → <5s. since 필터도 SQL WHERE 으로 위임. 첫 build 는 동일 비용이지만
+    # 그 후 mtime 변경 jsonl 만 재 parse. 기본 동작은 직접 parsing (rollback 경로).
     all_turns: list[dict] = []
-    for jp in iter_session_jsonl_paths(projects_root):
-        all_turns.extend(load_turns(jp))
-    all_turns.sort(key=lambda t: t["ts_unix"])
+    if use_cache:
+        try:
+            from turns_cache import get_turns_since  # noqa: WPS433
+            all_turns = get_turns_since(since, projects_root=projects_root)
+        except Exception as e:
+            _debug(f"turns_cache fail, fallback to direct parsing: {e}")
+            all_turns = []
+    if not all_turns:
+        for jp in iter_session_jsonl_paths(projects_root):
+            all_turns.extend(load_turns(jp))
+        all_turns.sort(key=lambda t: t["ts_unix"])
 
     per_event: list[dict] = []
     effort_values: list[int] = []
@@ -835,7 +845,24 @@ def main() -> int:
         action="store_true",
         help="Bash tool_use 명령어 분포 + procedural memory coverage 측정",
     )
+    parser.add_argument(
+        "--use-cache",
+        action="store_true",
+        help="Sprint NEXT-7 turns_cache 경유 (mtime 기반 incremental). 50s → <5s",
+    )
+    parser.add_argument(
+        "--rebuild-cache",
+        action="store_true",
+        help="turns_cache 전체 재빌드 (mtime 무시). --use-cache 와 함께",
+    )
     args = parser.parse_args()
+    if args.rebuild_cache:
+        try:
+            from turns_cache import refresh_cache  # noqa: WPS433
+            stat = refresh_cache(projects_root=args.projects_root, full=True)
+            _debug(f"cache rebuild: {stat}")
+        except Exception as e:
+            _debug(f"cache rebuild fail: {e}")
     try:
         if args.classifier_audit:
             out = classify_user_turns(
@@ -853,6 +880,7 @@ def main() -> int:
             metrics_path=args.metrics,
             projects_root=args.projects_root,
             hours_back=args.hours,
+            use_cache=args.use_cache,
         )
         if args.json:
             json.dump(summary, sys.stdout, ensure_ascii=False, indent=2)
