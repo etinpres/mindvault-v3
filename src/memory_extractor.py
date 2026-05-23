@@ -34,6 +34,40 @@ TRIGGER_RE = re.compile(
     r"환경설정|환경\s?변수|셋업|setup|이\s?(?:flag|옵션|플래그))"
 )
 
+# Sprint NEXT-1 자동 trigger 휴리스틱 — assistant 의 Bash tool_use 안 명령어가
+# 특수 binary 또는 non-trivial 한 모양인데, 직후 user 가 다음 액션을 지시하면
+# (한국어 사용자 패턴상 "ok/굿" 같은 confirmation 보다 "진행/적용/켜줘" 형이 흔하다)
+# Gemma 가 보고 procedural candidate 만들 가치 있다고 본다. trigger ON.
+SPECIAL_BIN_RE = re.compile(
+    r"\b(?:launchctl|sqlite3|ffprobe|ffmpeg|yt-dlp|higgsfield|kubectl|gcloud|"
+    r"hyperframes|jq|awk)\b|sed\s+-i\b|gh\s+api\b|"
+    r"claude\s+(?:--bg|-c\b|--resume|-r\b)|"
+    r"git\s+worktree\b"
+)
+NEXT_ACTION_RE = re.compile(
+    r"(진행|해결|적용|켜줘|실행|영구화|반영|배포|sync|push|land|merge|commit|"
+    r"ship|다음|이어서|계속)"
+)
+
+
+def _is_non_trivial_bash(cmd: str) -> bool:
+    """길이 100 이상, 또는 pipe/redirect 2+ 회 — '복잡한 한 줄'."""
+    if not cmd:
+        return False
+    if len(cmd) >= 100:
+        return True
+    if cmd.count(" | ") >= 2:
+        return True
+    if cmd.count(">") + cmd.count(">>") >= 2:
+        return True
+    return False
+
+
+def _is_special_bash(cmd: str) -> bool:
+    if not cmd:
+        return False
+    return bool(SPECIAL_BIN_RE.search(cmd))
+
 SECRET_PATTERNS = [
     (re.compile(r"sk-[a-zA-Z0-9_-]{20,}"), "[REDACTED_KEY]"),
     (re.compile(r"ghp_[a-zA-Z0-9]{20,}"), "[REDACTED_KEY]"),
@@ -81,6 +115,23 @@ def extract_text_from_content(content) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def extract_bash_from_content(content) -> list[str]:
+    """assistant message 안의 Bash tool_use command 문자열만 수집."""
+    if not isinstance(content, list):
+        return []
+    cmds: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "tool_use" or block.get("name") != "Bash":
+            continue
+        inp = block.get("input") or {}
+        cmd = inp.get("command") if isinstance(inp, dict) else None
+        if isinstance(cmd, str) and cmd.strip():
+            cmds.append(redact(cmd.strip()))
+    return cmds
+
+
 def load_tail_messages(jsonl_path: Path, tail_turns: int = 40) -> list[dict]:
     msgs: list[dict] = []
     try:
@@ -94,12 +145,22 @@ def load_tail_messages(jsonl_path: Path, tail_turns: int = 40) -> list[dict]:
                 if t not in ("user", "assistant"):
                     continue
                 msg = d.get("message") or {}
-                text = extract_text_from_content(msg.get("content")).strip()
-                if not text:
+                content = msg.get("content")
+                text = extract_text_from_content(content).strip()
+                bash_cmds = (
+                    extract_bash_from_content(content) if t == "assistant" else []
+                )
+                if not text and not bash_cmds:
                     continue
                 if text.startswith("# 지난 세션 요약"):
                     continue
-                msgs.append({"role": t, "text": redact(text)})
+                msgs.append(
+                    {
+                        "role": t,
+                        "text": redact(text),
+                        "bash_commands": bash_cmds,
+                    }
+                )
     except OSError as e:
         _debug(f"read fail {jsonl_path.name}: {e}")
         return []
@@ -107,11 +168,35 @@ def load_tail_messages(jsonl_path: Path, tail_turns: int = 40) -> list[dict]:
 
 
 def has_trigger(messages: list[dict]) -> bool:
+    """기존 키워드 trigger OR Sprint NEXT-1 자동 휴리스틱.
+
+    휴리스틱: 직전 assistant 의 Bash tool_use 가 special_binary 또는
+    non_trivial 인데, 직후 user 가 NEXT_ACTION 표현으로 응답하면
+    procedural 후보 가치가 있다고 본다 (Gemma 가 최종 판별).
+    """
+    prev_bash_signal = False
     for m in messages:
-        if m["role"] != "user":
+        role = m.get("role")
+        text = m.get("text", "") or ""
+        if role == "assistant":
+            cmds = m.get("bash_commands") or []
+            # 한 user turn 사이의 assistant 분할(tool_use → text) 을 흡수 — 한 번이라도
+            # special/non_trivial 가 보였으면 signal 누적
+            if any(_is_special_bash(c) or _is_non_trivial_bash(c) for c in cmds):
+                prev_bash_signal = True
             continue
-        if TRIGGER_RE.search(m["text"]):
+        if role != "user":
+            continue
+        if TRIGGER_RE.search(text):
             return True
+        if (
+            prev_bash_signal
+            and len(text) <= 50
+            and NEXT_ACTION_RE.search(text)
+        ):
+            return True
+        # user turn 마침 → 다음 사이클 위해 reset
+        prev_bash_signal = False
     return False
 
 
@@ -146,8 +231,14 @@ def call_gemma(prompt: str, max_tokens: int = 1500) -> str | None:
 def build_prompt(messages: list[dict]) -> str:
     excerpt_parts = []
     for m in messages:
-        prefix = "U" if m["role"] == "user" else "A"
-        excerpt_parts.append(f"{prefix}: {m['text'][:600]}")
+        role = m.get("role")
+        prefix = "U" if role == "user" else "A"
+        text = m.get("text") or ""
+        if text:
+            excerpt_parts.append(f"{prefix}: {text[:600]}")
+        # assistant 의 Bash command 도 Gemma 가 보도록 별도 라인으로 첨부
+        for cmd in (m.get("bash_commands") or [])[:5]:
+            excerpt_parts.append(f"{prefix}:bash: {cmd[:300]}")
     excerpt = "\n".join(excerpt_parts)
     return (
         "아래는 Claude Code 세션 대화 마지막 부분이다. 사용자가 '영구 기억'으로 남기려고 한 "

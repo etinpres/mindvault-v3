@@ -18,6 +18,11 @@ from unittest.mock import patch
 SRC = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
+# 다른 테스트가 production 위치의 memory_extractor 를 먼저 import 해 캐시한
+# 경우 worktree 신규 함수가 안 보이므로 모듈 재로드를 강제한다.
+for _mod in ("memory_extractor", "session_memory_end", "memory_review_cli"):
+    sys.modules.pop(_mod, None)
+
 
 class TestExtractorProceduralType(unittest.TestCase):
     def test_valid_types_includes_procedural(self):
@@ -77,6 +82,164 @@ class TestExtractorProceduralType(unittest.TestCase):
             [{"type": "bogus", "title": "x", "body": "y"}]
         )
         self.assertEqual(parse_gemma_json(out), [])
+
+
+class TestAutoTriggerHeuristic(unittest.TestCase):
+    """Sprint NEXT-1 — assistant Bash tool_use + user 다음 액션 자동 trigger."""
+
+    def test_special_bash_then_next_action_triggers(self):
+        from memory_extractor import has_trigger
+        msgs = [
+            {
+                "role": "assistant",
+                "text": "",
+                "bash_commands": [
+                    "launchctl kickstart -k gui/501/com.yonghaekim.gemma-mlx"
+                ],
+            },
+            {"role": "user", "text": "영구화 필요", "bash_commands": []},
+        ]
+        self.assertTrue(has_trigger(msgs))
+
+    def test_non_trivial_bash_then_next_action_triggers(self):
+        from memory_extractor import has_trigger
+        long_cmd = (
+            "curl -s https://example.com/api/v1/long/endpoint?param=1&another=2 "
+            '| jq ".data" > /tmp/out.json && echo done'
+        )
+        msgs = [
+            {"role": "assistant", "text": "", "bash_commands": [long_cmd]},
+            {"role": "user", "text": "적용해줘", "bash_commands": []},
+        ]
+        self.assertTrue(has_trigger(msgs))
+
+    def test_trivial_bash_does_not_trigger(self):
+        from memory_extractor import has_trigger
+        msgs = [
+            {"role": "assistant", "text": "", "bash_commands": ["ls -la"]},
+            {"role": "user", "text": "진행", "bash_commands": []},
+        ]
+        self.assertFalse(has_trigger(msgs))
+
+    def test_special_bash_without_next_action_does_not_trigger(self):
+        from memory_extractor import has_trigger
+        msgs = [
+            {
+                "role": "assistant",
+                "text": "",
+                "bash_commands": ['sqlite3 db.db "SELECT 1"'],
+            },
+            {"role": "user", "text": "그래서 결과는?", "bash_commands": []},
+        ]
+        self.assertFalse(has_trigger(msgs))
+
+    def test_long_next_action_message_does_not_trigger(self):
+        """잡담·서술이 길게 섞인 메시지는 next_action 매칭돼도 trigger 안 켬."""
+        from memory_extractor import has_trigger
+        msgs = [
+            {
+                "role": "assistant",
+                "text": "",
+                "bash_commands": ["launchctl load -w ~/Library/LaunchAgents/x.plist"],
+            },
+            {
+                "role": "user",
+                "text": (
+                    "아 이거 적용 안 되네 다른 방법으로 시도해야겠다 한 번 더 "
+                    "원인 분석부터 다시 해보자 진행 상황 정리도 필요해"
+                ),
+                "bash_commands": [],
+            },
+        ]
+        self.assertFalse(has_trigger(msgs))
+
+    def test_signal_resets_after_user_turn(self):
+        from memory_extractor import has_trigger
+        msgs = [
+            {
+                "role": "assistant",
+                "text": "",
+                "bash_commands": ["launchctl load -w x.plist"],
+            },
+            {"role": "user", "text": "결과 보여줘", "bash_commands": []},
+            {"role": "assistant", "text": "결과는 ...", "bash_commands": []},
+            {"role": "user", "text": "진행", "bash_commands": []},
+        ]
+        self.assertFalse(has_trigger(msgs))
+
+    def test_signal_accumulates_across_split_assistant(self):
+        """assistant 가 tool_use → text 로 분할된 케이스도 신호 유지."""
+        from memory_extractor import has_trigger
+        msgs = [
+            {"role": "user", "text": "환경 설정 부탁", "bash_commands": []},
+            {
+                "role": "assistant",
+                "text": "",
+                "bash_commands": ["launchctl load -w x.plist"],
+            },
+            {"role": "assistant", "text": "셋업 완료", "bash_commands": []},
+            {"role": "user", "text": "영구화", "bash_commands": []},
+        ]
+        self.assertTrue(has_trigger(msgs))
+
+    def test_text_trigger_still_works_with_new_message_shape(self):
+        from memory_extractor import has_trigger
+        msgs = [{"role": "user", "text": "이 명령어 외워둬", "bash_commands": []}]
+        self.assertTrue(has_trigger(msgs))
+
+
+class TestExtractBashFromContent(unittest.TestCase):
+    def test_extracts_bash_command(self):
+        from memory_extractor import extract_bash_from_content
+        content = [
+            {"type": "text", "text": "준비"},
+            {
+                "type": "tool_use",
+                "name": "Bash",
+                "input": {"command": "sqlite3 a.db", "description": "x"},
+            },
+        ]
+        self.assertEqual(extract_bash_from_content(content), ["sqlite3 a.db"])
+
+    def test_ignores_non_bash_tools(self):
+        from memory_extractor import extract_bash_from_content
+        content = [
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "/a"}},
+            {"type": "tool_use", "name": "Edit", "input": {"file_path": "/b"}},
+        ]
+        self.assertEqual(extract_bash_from_content(content), [])
+
+    def test_redacts_secrets(self):
+        from memory_extractor import extract_bash_from_content
+        content = [
+            {
+                "type": "tool_use",
+                "name": "Bash",
+                "input": {
+                    "command": "curl -H 'Authorization: Bearer abc123def456ghi789jkl012'"
+                },
+            }
+        ]
+        out = extract_bash_from_content(content)
+        self.assertEqual(len(out), 1)
+        self.assertIn("[REDACTED]", out[0])
+
+
+class TestBuildPromptIncludesBash(unittest.TestCase):
+    def test_bash_lines_appended(self):
+        from memory_extractor import build_prompt
+        msgs = [
+            {"role": "user", "text": "환경 설정", "bash_commands": []},
+            {
+                "role": "assistant",
+                "text": "",
+                "bash_commands": ["launchctl load -w x.plist"],
+            },
+            {"role": "user", "text": "영구화", "bash_commands": []},
+        ]
+        p = build_prompt(msgs)
+        self.assertIn("A:bash: launchctl", p)
+        self.assertIn("U: 환경 설정", p)
 
 
 class TestSessionEndStagedSlot(unittest.TestCase):

@@ -184,7 +184,7 @@ v2.9 베이스라인 + v3 target + Sprint 13~16 자율 실행 후 실측 (Sprint
 | hook hit rate | ~79% (도메인 query 추정) | 90%+ | **66.5%** (전 호출 168h, 292/439). Sprint 16 classifier 가 잡담·메타 분모 제외 시 실질 hit 상승 예상 |
 | false positive rate | 미측정 | <5% | **0.0%** ✓ (표본 39건, Sprint 15 negative cue 미발화) |
 | Claude internal effort (avg follow-up read·grep) | 미측정 | <1 | **0.60** ✓ (recall 후 ~ 다음 user turn 사이 avg tool_use) |
-| procedural memory coverage | 0% (slot 없음) | 70%+ 형 자주 쓰는 명령어 | **0%** (Sprint 13 슬롯·trigger·라우팅 인프라 완성, 자동 추출 검증은 운영 누적 후) |
+| procedural memory coverage | 0% (slot 없음) | 70%+ 형 자주 쓰는 명령어 | **0%** baseline (695 bash / 42 binary, `--procedural-audit --hours 720`) — Sprint 13 인프라 + NEXT-1 자동 trigger 휴리스틱(special_binary OR non_trivial + NEXT_ACTION) 완성. 운영 누적 후 재측 예정 |
 | 자기 모순 메모리 감지율 | 0% | 80%+ | **8건 후보 탐지** (`scan_self_affirming_memories`) — §1.4 echo chamber 의 "MindVault v1 폐기 / v2 운영" 메모리 직접 발견 |
 | session-end auto compile latency | N/A | <10s (Gemma local) | 미측정 (`MV2_AUTO_COMPILE` opt-in 단계, 운영 fire 0건) |
 | duplicate memory | 미측정 | 0 | **name-dup 0, stem-collision 1** (project_mindvault) — `dedup_cli.py` 인프라 완성, stem 충돌 1건은 형 검토 영역 |

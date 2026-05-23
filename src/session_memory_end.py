@@ -15,14 +15,20 @@ import traceback
 from pathlib import Path
 
 # import path 보강: hook (~/.claude/hooks/)에 배포돼도 memory_extractor는
-# ~/.claude/scripts/mindvault/에 있음. dev/repo는 src/.
+# ~/.claude/scripts/mindvault/에 있음. dev/repo는 src/ 옆에 같이 있음.
+# 자기 자신이 있는 디렉토리에 memory_extractor.py 가 같이 있으면 dev/repo 또는
+# 정상 배포된 production — 그쪽만 sys.path 에 등록한다. 없을 때만(hooks/ 만 배포된 경우)
+# production fallback 을 추가. 이렇게 안 하면 worktree 테스트 시 production 코드가
+# 우선 잡혀 새 함수가 안 보임.
 _HOOK_FILE = Path(__file__).resolve()
-for _p in (
-    Path("/Users/yonghaekim/.claude/scripts/mindvault"),  # production
-    _HOOK_FILE.parent,                                     # dev/repo
-):
-    if _p.is_dir() and str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
+_HOOK_DIR = _HOOK_FILE.parent
+if (_HOOK_DIR / "memory_extractor.py").is_file():
+    if str(_HOOK_DIR) not in sys.path:
+        sys.path.insert(0, str(_HOOK_DIR))
+else:
+    _PROD = Path("/Users/yonghaekim/.claude/scripts/mindvault")
+    if _PROD.is_dir() and str(_PROD) not in sys.path:
+        sys.path.insert(0, str(_PROD))
 
 RECURSION_GUARD_ENV = "MV2_HOOK_RECURSION_GUARD"
 # sub-session의 SessionEnd 즉시 skip
