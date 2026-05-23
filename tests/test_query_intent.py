@@ -110,3 +110,104 @@ class TestShouldSkipRecall(unittest.TestCase):
                 should_skip_recall(IntentResult(intent, 0.5, [])),
                 f"잘못된 skip: {intent}",
             )
+
+
+class TestGemmaIntent(unittest.TestCase):
+    """Sprint NEXT-3 — Gemma 보강 classifier."""
+
+    def test_gemma_intent_env_off_default(self):
+        from query_intent import gemma_intent_enabled
+        import os
+        os.environ.pop("MV2_GEMMA_INTENT", None)
+        self.assertFalse(gemma_intent_enabled())
+
+    def test_gemma_intent_env_on(self):
+        from query_intent import gemma_intent_enabled
+        import os
+        os.environ["MV2_GEMMA_INTENT"] = "1"
+        try:
+            self.assertTrue(gemma_intent_enabled())
+        finally:
+            os.environ.pop("MV2_GEMMA_INTENT", None)
+
+    def test_gemma_intent_env_other_values_off(self):
+        from query_intent import gemma_intent_enabled
+        import os
+        for v in ("0", "true", "yes", ""):
+            os.environ["MV2_GEMMA_INTENT"] = v
+            self.assertFalse(gemma_intent_enabled(), f"value={v!r} should be off")
+        os.environ.pop("MV2_GEMMA_INTENT", None)
+
+    def test_normalize_gemma_label_valid(self):
+        from query_intent import _normalize_gemma_label
+        cases = [
+            ("chat", "chat"),
+            ("CHAT", "chat"),
+            ("chat\n", "chat"),
+            ("meta-conversation", "meta"),
+            ("**code**", "code"),
+            ("recall", "recall"),
+            ("other", "other"),
+        ]
+        for raw, expect in cases:
+            self.assertEqual(
+                _normalize_gemma_label(raw),
+                expect,
+                f"raw={raw!r}",
+            )
+
+    def test_normalize_gemma_label_invalid(self):
+        from query_intent import _normalize_gemma_label
+        for raw in (None, "", "blah", "12345", "한글만"):
+            self.assertIsNone(_normalize_gemma_label(raw), f"raw={raw!r}")
+
+    def test_classify_with_gemma_too_long_returns_none(self):
+        from query_intent import classify_with_gemma
+        long_q = "x" * 100  # > GEMMA_INTENT_MAX_LEN (40)
+        self.assertIsNone(classify_with_gemma(long_q))
+
+    def test_classify_with_gemma_empty_returns_none(self):
+        from query_intent import classify_with_gemma
+        self.assertIsNone(classify_with_gemma(""))
+        self.assertIsNone(classify_with_gemma("   "))
+
+    def test_classify_with_gemma_chat_label(self):
+        """Gemma 가 chat 반환 → IntentResult chat 으로 반환."""
+        import query_intent
+        from unittest.mock import patch
+        with patch.object(query_intent, "_call_gemma_intent", return_value="chat"):
+            r = query_intent.classify_with_gemma("뭐해")
+        self.assertIsNotNone(r)
+        self.assertEqual(r.intent, "chat")
+        self.assertIn("gemma:chat", r.matched)
+
+    def test_classify_with_gemma_meta_label(self):
+        import query_intent
+        from unittest.mock import patch
+        with patch.object(query_intent, "_call_gemma_intent", return_value="meta"):
+            r = query_intent.classify_with_gemma("너 누구야")
+        self.assertIsNotNone(r)
+        self.assertEqual(r.intent, "meta")
+
+    def test_classify_with_gemma_other_label_returns_none(self):
+        """other 는 unknown 과 동의 — None 반환해 rule-based 결과 유지."""
+        import query_intent
+        from unittest.mock import patch
+        with patch.object(query_intent, "_call_gemma_intent", return_value="other"):
+            r = query_intent.classify_with_gemma("뭔가 작업 지시")
+        self.assertIsNone(r)
+
+    def test_classify_with_gemma_gemma_failure_returns_none(self):
+        """Gemma 서버 다운 등 None 반환 → rule-based 폴백."""
+        import query_intent
+        from unittest.mock import patch
+        with patch.object(query_intent, "_call_gemma_intent", return_value=None):
+            r = query_intent.classify_with_gemma("뭐해")
+        self.assertIsNone(r)
+
+    def test_classify_with_gemma_invalid_label_returns_none(self):
+        import query_intent
+        from unittest.mock import patch
+        with patch.object(query_intent, "_call_gemma_intent", return_value="bogus"):
+            r = query_intent.classify_with_gemma("뭐해")
+        self.assertIsNone(r)

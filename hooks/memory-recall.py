@@ -203,8 +203,18 @@ def main() -> int:
         intent_label = "unknown"
         intent_match: list[str] = []
         try:
-            from query_intent import classify, should_skip_recall  # noqa: WPS433
+            from query_intent import (  # noqa: WPS433
+                classify,
+                classify_with_gemma,
+                gemma_intent_enabled,
+                should_skip_recall,
+            )
             intent_obj = classify(prompt)
+            # Sprint NEXT-3: rule-based unknown 보강 — opt-in env 일 때만, 짧은 query 만.
+            if intent_obj.intent == "unknown" and gemma_intent_enabled():
+                gemma_obj = classify_with_gemma(prompt)
+                if gemma_obj is not None:
+                    intent_obj = gemma_obj
             intent_label = intent_obj.intent
             intent_match = list(intent_obj.matched)
             if should_skip_recall(intent_obj):

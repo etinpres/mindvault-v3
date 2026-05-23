@@ -19,8 +19,34 @@ intent 가 chat/meta 면 회수 0건 강제 — V3-PLAN §3.D 의 mid-cosine zon
 """
 from __future__ import annotations
 
+import json
+import os
 import re
+import time
+import urllib.request
+from pathlib import Path
 from typing import NamedTuple
+
+# Sprint NEXT-3 — Gemma 보강 classifier. rule-based 가 unknown 으로 떨어진
+# 짧은 query 에 한해 Gemma 가 chat/meta 분류 보강. opt-in 환경변수로 default off.
+GEMMA_INTENT_URL = "http://localhost:8080/v1/chat/completions"
+GEMMA_INTENT_MODEL = "mlx-community/gemma-4-e4b-it-4bit"
+GEMMA_INTENT_TIMEOUT = 2.0
+GEMMA_INTENT_MAX_LEN = 40  # 그 이상 query 는 Gemma 호출 안 함 (cost / latency)
+ENABLE_GEMMA_INTENT_ENV = "MV2_GEMMA_INTENT"
+
+_DEBUG_LOG = Path("/Users/yonghaekim/.claude/mindvault-v2/debug.log")
+
+
+def _debug(msg: str) -> None:
+    try:
+        _DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _DEBUG_LOG.open("a") as f:
+            f.write(
+                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] intent: {msg}\n"
+            )
+    except Exception:
+        pass
 
 # 각 카테고리 regex. compile 1회.
 # 우선순위: recall > code > meta > chat > unknown.
@@ -120,3 +146,92 @@ def classify(prompt: str) -> IntentResult:
 def should_skip_recall(intent: IntentResult) -> bool:
     """intent 가 chat/meta 면 회수 skip. 게이트 통과해도 차단."""
     return intent.intent in ("chat", "meta")
+
+
+_GEMMA_INTENT_PROMPT = (
+    "다음 질문을 한 단어로 분류해라. 분류 라벨만 한 줄 출력 (해설 금지):\n"
+    "chat: 인사·잡담·날씨·기분\n"
+    "meta: Claude·세션·모델·버전·토큰 등 자기참조\n"
+    "code: 코드·파일·실행·디버그·테스트·빌드\n"
+    "recall: 과거 대화·결정·메모리 회수\n"
+    "other: 그 외 작업 지시\n\n"
+    "질문: {q}\n"
+    "분류:"
+)
+
+_VALID_GEMMA_LABELS = {"chat", "meta", "code", "recall", "other"}
+
+
+def gemma_intent_enabled() -> bool:
+    """env-based opt-in. session_memory_end / hook 이 사용."""
+    return os.environ.get(ENABLE_GEMMA_INTENT_ENV, "").strip() == "1"
+
+
+def _call_gemma_intent(prompt_text: str) -> str | None:
+    """Gemma 한 줄 분류 호출. 실패하면 None."""
+    body = json.dumps(
+        {
+            "model": GEMMA_INTENT_MODEL,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": _GEMMA_INTENT_PROMPT.format(q=prompt_text),
+                }
+            ],
+            "max_tokens": 8,
+            "temperature": 0.0,
+        }
+    ).encode()
+    req = urllib.request.Request(
+        GEMMA_INTENT_URL,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=GEMMA_INTENT_TIMEOUT) as resp:
+            data = json.loads(resp.read())
+        choices = data.get("choices") or []
+        if not choices:
+            return None
+        content = (choices[0].get("message") or {}).get("content") or ""
+        return content.strip() or None
+    except Exception as e:
+        _debug(f"gemma intent fail: {type(e).__name__} {e}")
+        return None
+
+
+_LABEL_TOKEN_RE = re.compile(r"[a-zA-Z]+")
+
+
+def _normalize_gemma_label(raw: str | None) -> str | None:
+    """Gemma 응답의 첫 영문 토큰을 lowercase 라벨로. 유효 라벨만 반환."""
+    if not raw:
+        return None
+    m = _LABEL_TOKEN_RE.search(raw)
+    if not m:
+        return None
+    label = m.group(0).lower()
+    return label if label in _VALID_GEMMA_LABELS else None
+
+
+def classify_with_gemma(prompt: str) -> IntentResult | None:
+    """rule-based 가 unknown 으로 떨어진 짧은 query 를 Gemma 가 보강 분류.
+
+    호출 조건은 caller (hook) 가 판단 — 본 함수는 opt-in 체크만 추가로 안 함.
+    유효 라벨(`chat`/`meta`/`code`/`recall`/`other`) 만 반환. 그 외엔 None.
+    실패(timeout, 서버 다운, parse fail)는 None 반환 — rule-based 결과로 폴백.
+    """
+    p = (prompt or "").strip()
+    if not p or len(p) > GEMMA_INTENT_MAX_LEN:
+        return None
+    raw = _call_gemma_intent(p)
+    label = _normalize_gemma_label(raw)
+    if label is None:
+        return None
+    if label == "other":
+        # other 는 unknown 과 동의 — 보강 효과 없음. 본 hook 흐름은
+        # rule-based unknown 그대로 사용하는 게 더 안전.
+        return None
+    _debug(f"gemma label={label} q={p[:40]!r}")
+    return IntentResult(label, 0.6, [f"gemma:{label}"])
