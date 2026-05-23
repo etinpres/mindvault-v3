@@ -2,12 +2,14 @@
 """MindVault v2 Sprint 3 — /memory review CLI.
 
 하위 명령:
-  list                     → staged 후보 JSON 출력 (update 후보면 update_of 표시)
-  diff <filename>          → Sprint 14: update 후보의 기존 vs 정제 본문 unified diff
-  approve <filename>       → staged → memory/ 이동 + MEMORY.md 한 줄 append.
-                             Sprint 14: update_of 메타 있으면 기존 .bak 백업 + body overwrite
-  reject  <filename>       → staged 파일 삭제
-  prune                    → 30일 경과 staged 삭제
+  list                          → staged 후보 JSON 출력 (update 후보면 update_of 표시)
+  diff <filename> [--pretty]    → Sprint 14: update 후보의 기존 vs 정제 본문 unified diff.
+                                  Sprint NEXT-5: --pretty 또는 tty 자동 감지 시 ANSI 색상.
+                                  --pretty 명시 시 plain text (JSON 아님)
+  approve <filename>            → staged → memory/ 이동 + MEMORY.md 한 줄 append.
+                                  Sprint 14: update_of 메타 있으면 기존 .bak 백업 + body overwrite
+  reject  <filename>            → staged 파일 삭제
+  prune                         → 30일 경과 staged 삭제
 """
 from __future__ import annotations
 
@@ -29,6 +31,13 @@ STAGED_DIRS = (STAGED_DIR, PROCEDURAL_STAGED_DIR)
 INDEX_MD = MEMORY_DIR / "MEMORY.md"
 DEBUG_LOG = Path("/Users/yonghaekim/.claude/mindvault-v2/debug.log")
 STAGED_TTL_DAYS = 30
+
+# Sprint NEXT-5 — ANSI 색상 diff 출력. 형이 매 update 검토 시 +/- 식별 비용 ↓.
+ANSI_RESET = "\033[0m"
+ANSI_RED = "\033[31m"
+ANSI_GREEN = "\033[32m"
+ANSI_MAGENTA = "\033[35m"
+ANSI_BOLD_BLUE = "\033[1;34m"
 
 
 def _debug(msg: str) -> None:
@@ -157,10 +166,43 @@ def _read_existing_body(path: Path) -> str:
     return body or ""
 
 
-def cmd_diff(filename: str) -> int:
+def _colorize_diff(diff_text: str) -> str:
+    """unified diff 라인별 ANSI 색상 적용. Sprint NEXT-5.
+
+    - `+` 라인: green (단 `+++` 헤더는 bold blue)
+    - `-` 라인: red (단 `---` 헤더는 bold blue)
+    - `@@` hunk 헤더: magenta
+    - 그 외 컨텍스트 라인: 무색
+    """
+    out: list[str] = []
+    for line in diff_text.splitlines():
+        if line.startswith("+++") or line.startswith("---"):
+            out.append(f"{ANSI_BOLD_BLUE}{line}{ANSI_RESET}")
+        elif line.startswith("@@"):
+            out.append(f"{ANSI_MAGENTA}{line}{ANSI_RESET}")
+        elif line.startswith("+"):
+            out.append(f"{ANSI_GREEN}{line}{ANSI_RESET}")
+        elif line.startswith("-"):
+            out.append(f"{ANSI_RED}{line}{ANSI_RESET}")
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def _should_use_color(pretty_flag: bool) -> bool:
+    """tty 자동 감지 + --pretty 강제. pretty_flag True 면 무조건 색상.
+
+    False 면 isatty 자동 판단도 안 함 — JSON 출력 안에 ANSI 섞이면 파싱 불편.
+    색상은 항상 명시 opt-in (--pretty) 으로 둔다.
+    """
+    return bool(pretty_flag)
+
+
+def cmd_diff(filename: str, pretty: bool = False) -> int:
     """Sprint 14: staged 후보가 update_of 가지면 기존 vs 정제 unified diff 출력.
 
     update_of 없으면 신규 후보임을 알리고 staged 본문 표시.
+    Sprint NEXT-5: pretty=True 면 JSON 대신 ANSI 색상 plain text.
     """
     src = _safe_staged_path(filename)
     if src is None:
@@ -173,21 +215,27 @@ def cmd_diff(filename: str) -> int:
         text = src.read_text(encoding="utf-8")
         meta, body = parse_frontmatter(text)
         update_of = (meta.get("update_of") or "").strip()
+        use_color = _should_use_color(pretty)
         if not update_of:
-            sys.stdout.write(json.dumps({
-                "ok": True,
-                "kind": "new",
-                "title": meta.get("name", src.stem),
-                "body": body.strip(),
-            }, ensure_ascii=False))
+            if pretty:
+                sys.stdout.write(
+                    f"[new] {meta.get('name', src.stem)}\n\n{body.strip()}\n"
+                )
+            else:
+                sys.stdout.write(json.dumps({
+                    "ok": True,
+                    "kind": "new",
+                    "title": meta.get("name", src.stem),
+                    "body": body.strip(),
+                }, ensure_ascii=False))
             return 0
         target = Path(update_of)
         if not _is_safe_update_target(target):
-            sys.stdout.write(json.dumps({
-                "ok": False,
-                "error": "unsafe update target",
-                "target": update_of,
-            }))
+            err = {"ok": False, "error": "unsafe update target", "target": update_of}
+            if pretty:
+                sys.stdout.write(f"error: unsafe update target\n  {update_of}\n")
+            else:
+                sys.stdout.write(json.dumps(err))
             return 0
         existing = _read_existing_body(target) if target.is_file() else ""
         sys.path.insert(0, str(Path(__file__).parent))
@@ -197,20 +245,33 @@ def cmd_diff(filename: str) -> int:
         except Exception as e:
             _debug(f"diff render fail: {e}")
             diff = ""
-        sys.stdout.write(json.dumps({
-            "ok": True,
-            "kind": "update",
-            "title": meta.get("name", src.stem),
-            "update_of": update_of,
-            "diff_summary": meta.get("diff_summary", ""),
-            "existing_len": len(existing),
-            "compiled_len": len(body),
-            "unified_diff": diff,
-        }, ensure_ascii=False))
+        if pretty:
+            colored = _colorize_diff(diff) if use_color else diff
+            header = (
+                f"[update] {meta.get('name', src.stem)}\n"
+                f"  target: {update_of}\n"
+                f"  summary: {meta.get('diff_summary', '')}\n"
+                f"  {len(existing)} → {len(body)} chars\n\n"
+            )
+            sys.stdout.write(header + colored + "\n")
+        else:
+            sys.stdout.write(json.dumps({
+                "ok": True,
+                "kind": "update",
+                "title": meta.get("name", src.stem),
+                "update_of": update_of,
+                "diff_summary": meta.get("diff_summary", ""),
+                "existing_len": len(existing),
+                "compiled_len": len(body),
+                "unified_diff": diff,
+            }, ensure_ascii=False))
         return 0
     except Exception as e:
         _debug(f"diff FATAL {filename}: {e}")
-        sys.stdout.write(json.dumps({"ok": False, "error": str(e)}))
+        if pretty:
+            sys.stdout.write(f"error: {e}\n")
+        else:
+            sys.stdout.write(json.dumps({"ok": False, "error": str(e)}))
         return 0
 
 
@@ -371,14 +432,17 @@ def main() -> int:
             sys.stdout.write(json.dumps({"error": "usage: list|diff|approve|reject|prune"}))
             return 0
         sub = sys.argv[1]
+        # Sprint NEXT-5: argv 에서 --pretty 분리
+        rest = [a for a in sys.argv[2:] if a != "--pretty"]
+        pretty = "--pretty" in sys.argv[2:]
         if sub == "list":
             return cmd_list()
-        if sub == "diff" and len(sys.argv) >= 3:
-            return cmd_diff(sys.argv[2])
-        if sub == "approve" and len(sys.argv) >= 3:
-            return cmd_approve(sys.argv[2])
-        if sub == "reject" and len(sys.argv) >= 3:
-            return cmd_reject(sys.argv[2])
+        if sub == "diff" and len(rest) >= 1:
+            return cmd_diff(rest[0], pretty=pretty)
+        if sub == "approve" and len(rest) >= 1:
+            return cmd_approve(rest[0])
+        if sub == "reject" and len(rest) >= 1:
+            return cmd_reject(rest[0])
         if sub == "prune":
             return cmd_prune()
         sys.stdout.write(json.dumps({"error": "bad args"}))

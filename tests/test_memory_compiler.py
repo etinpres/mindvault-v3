@@ -549,5 +549,113 @@ class _StubIndexer:
         return {"updated": 0, "skipped": 0, "removed": 0}
 
 
+class TestPrettyDiff(unittest.TestCase):
+    """Sprint NEXT-5 — diff CLI --pretty 옵션 ANSI 색상."""
+
+    def test_colorize_diff_plus_minus_hunks(self):
+        from memory_review_cli import (
+            _colorize_diff,
+            ANSI_GREEN,
+            ANSI_RED,
+            ANSI_MAGENTA,
+            ANSI_BOLD_BLUE,
+            ANSI_RESET,
+        )
+        diff = (
+            "--- existing\n"
+            "+++ compiled\n"
+            "@@ -1,2 +1,2 @@\n"
+            "-old line\n"
+            "+new line\n"
+            " context line\n"
+        )
+        out = _colorize_diff(diff)
+        self.assertIn(ANSI_BOLD_BLUE + "--- existing" + ANSI_RESET, out)
+        self.assertIn(ANSI_BOLD_BLUE + "+++ compiled" + ANSI_RESET, out)
+        self.assertIn(ANSI_MAGENTA + "@@ -1,2 +1,2 @@" + ANSI_RESET, out)
+        self.assertIn(ANSI_RED + "-old line" + ANSI_RESET, out)
+        self.assertIn(ANSI_GREEN + "+new line" + ANSI_RESET, out)
+        # context line 은 무색
+        self.assertIn(" context line", out)
+        self.assertNotIn(ANSI_GREEN + " context line", out)
+
+    def test_should_use_color_pretty_flag(self):
+        from memory_review_cli import _should_use_color
+        self.assertTrue(_should_use_color(True))
+        self.assertFalse(_should_use_color(False))
+
+    def test_cmd_diff_pretty_for_update(self):
+        """pretty=True 일 때 JSON 대신 ANSI 색상 plain text 출력."""
+        import memory_review_cli as mrc
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mem = root / "memory"
+            mem.mkdir()
+            staged = mem / "_staged"
+            staged.mkdir()
+            existing = mem / "topic.md"
+            existing.write_text(
+                "---\nname: topic\n---\nold body",
+                encoding="utf-8",
+            )
+            staged_file = staged / "20260523-010101_feedback_topic.md"
+            staged_file.write_text(
+                "---\nname: topic\ndescription: x\ntype: feedback\n"
+                f"update_of: {existing}\n"
+                "diff_summary: +1 -1\n---\n"
+                "new body",
+                encoding="utf-8",
+            )
+            import io
+            buf = io.StringIO()
+            with patch.object(mrc, "STAGED_DIR", staged), \
+                 patch.object(
+                     mrc, "PROCEDURAL_STAGED_DIR", mem / "_procedural" / "_staged"
+                 ), \
+                 patch.object(
+                     mrc, "STAGED_DIRS", (staged, mem / "_procedural" / "_staged")
+                 ), \
+                 patch.object(mrc, "_allowed_update_roots", return_value=[mem]), \
+                 patch("sys.stdout", buf):
+                rc = mrc.cmd_diff(staged_file.name, pretty=True)
+            self.assertEqual(rc, 0)
+            text = buf.getvalue()
+            # JSON 아님
+            self.assertFalse(text.lstrip().startswith("{"))
+            # 헤더 + ANSI 색상 포함
+            self.assertIn("[update]", text)
+            self.assertIn("\033[31m-old body", text)
+            self.assertIn("\033[32m+new body", text)
+
+    def test_cmd_diff_pretty_for_new_candidate(self):
+        import memory_review_cli as mrc
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staged = root / "_staged"
+            staged.mkdir()
+            staged_file = staged / "20260523-010101_feedback_new_topic.md"
+            staged_file.write_text(
+                "---\nname: new topic\ndescription: x\ntype: feedback\n---\n"
+                "fresh body",
+                encoding="utf-8",
+            )
+            import io
+            buf = io.StringIO()
+            with patch.object(mrc, "STAGED_DIR", staged), \
+                 patch.object(
+                     mrc, "PROCEDURAL_STAGED_DIR", root / "_procedural" / "_staged"
+                 ), \
+                 patch.object(
+                     mrc, "STAGED_DIRS", (staged, root / "_procedural" / "_staged")
+                 ), \
+                 patch("sys.stdout", buf):
+                rc = mrc.cmd_diff(staged_file.name, pretty=True)
+            self.assertEqual(rc, 0)
+            text = buf.getvalue()
+            self.assertFalse(text.lstrip().startswith("{"))
+            self.assertIn("[new]", text)
+            self.assertIn("fresh body", text)
+
+
 if __name__ == "__main__":
     unittest.main()
