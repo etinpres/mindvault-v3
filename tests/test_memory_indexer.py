@@ -57,9 +57,17 @@ body"""
 
 
 class TestEmbedText(unittest.TestCase):
+    """embed_text 의 urlopen 실패·bad shape 처리.
+
+    주의: production embed_cache 에 'hello'(passage) entry 가 이미 있어 cache hit 하면
+    mock urlopen 미도달 → 실패. 모든 케이스에서 _embed_cache_get 도 함께 mock 해 cache
+    miss 강제. Sprint 11 BUILD-LOG §"미해결" 4번 해소.
+    """
     def test_embed_success(self):
         from memory_indexer import embed_text
-        with patch("memory_indexer.urllib.request.urlopen") as mock_open:
+        with patch("memory_indexer._embed_cache_get", return_value=None), \
+             patch("memory_indexer._embed_cache_put"), \
+             patch("memory_indexer.urllib.request.urlopen") as mock_open:
             mock_resp = mock_open.return_value.__enter__.return_value
             mock_resp.read.return_value = json.dumps(
                 {"vector": [0.1] * 1024}
@@ -70,13 +78,15 @@ class TestEmbedText(unittest.TestCase):
 
     def test_embed_timeout_returns_none(self):
         from memory_indexer import embed_text
-        with patch("memory_indexer.urllib.request.urlopen") as mock_open:
+        with patch("memory_indexer._embed_cache_get", return_value=None), \
+             patch("memory_indexer.urllib.request.urlopen") as mock_open:
             mock_open.side_effect = TimeoutError("timeout")
             self.assertIsNone(embed_text("hello"))
 
     def test_embed_connection_refused_returns_none(self):
         from memory_indexer import embed_text
-        with patch("memory_indexer.urllib.request.urlopen") as mock_open:
+        with patch("memory_indexer._embed_cache_get", return_value=None), \
+             patch("memory_indexer.urllib.request.urlopen") as mock_open:
             mock_open.side_effect = urllib.error.URLError("refused")
             self.assertIsNone(embed_text("hello"))
 
@@ -87,7 +97,8 @@ class TestEmbedText(unittest.TestCase):
 
     def test_embed_bad_shape_returns_none(self):
         from memory_indexer import embed_text
-        with patch("memory_indexer.urllib.request.urlopen") as mock_open:
+        with patch("memory_indexer._embed_cache_get", return_value=None), \
+             patch("memory_indexer.urllib.request.urlopen") as mock_open:
             mock_resp = mock_open.return_value.__enter__.return_value
             mock_resp.read.return_value = json.dumps(
                 {"vector": [0.1] * 512}
