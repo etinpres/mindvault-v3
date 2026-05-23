@@ -300,6 +300,11 @@ def load_turns(jsonl_path: Path) -> list[dict]:
                     _is_system_reminder(text) or _is_hook_injected(text)
                 ):
                     continue
+                # Sprint 15 #1: tool_result block 은 message.type=user 로 jsonl 에
+                # 들어오지만 _extract_text 가 무시해 빈 text 가 됨. 빈 user turn 은
+                # 실제 발화 아니므로 measure_post_recall 의 next_user 후보에서 제외.
+                if t == "user" and not text:
+                    continue
                 turns.append({
                     "ts_unix": ts_unix,
                     "role": t,
@@ -312,24 +317,35 @@ def load_turns(jsonl_path: Path) -> list[dict]:
     return turns
 
 
+SHORT_NEXT_USER_CHARS = 15
+# Sprint 15 #1: 다음 user turn 길이 < 15자 면 implicit FP 약한 신호 ("ㄴㄴ", "아니",
+# "그거 말고" 식 격렬 부정). negative cue regex 안 잡혀도 짧음 자체가 시그널.
+SESSION_GAP_SEC = 1800
+# 30분 이상 다음 user turn 없으면 session abandoned 로 간주 → implicit FP 약한 신호
+
+
 def measure_post_recall(turns: list[dict], recall_ts: float) -> dict:
     """recall_ts 직후 ~ 다음 user turn 직전 사이 assistant tool_use 카운트 + 다음 user 텍스트.
 
     반환:
-    - tool_use_count: int (recall 후 ~ 다음 user 전 assistant turn 들의 tool_use 합)
+    - tool_use_count: int
     - tool_use_breakdown: {name: count}
     - next_user_text: str | None
     - next_user_ts: float | None
+    - next_user_chars: int (next_user_text 없으면 -1)
+    - abandoned: bool — 30분 안에 다음 user turn 없음
     """
     out = {
         "tool_use_count": 0,
         "tool_use_breakdown": {},
         "next_user_text": None,
         "next_user_ts": None,
+        "next_user_chars": -1,
+        "abandoned": False,
     }
     if not turns:
+        out["abandoned"] = True
         return out
-    # recall_ts 직후의 turn 찾기. tolerance 5s (timezone naive 처리·hook latency).
     started = False
     for t in turns:
         if not started and t["ts_unix"] >= recall_ts - 5:
@@ -339,6 +355,7 @@ def measure_post_recall(turns: list[dict], recall_ts: float) -> dict:
         if t["role"] == "user" and t["ts_unix"] > recall_ts + 1:
             out["next_user_text"] = t["text"]
             out["next_user_ts"] = t["ts_unix"]
+            out["next_user_chars"] = len(t["text"])
             break
         if t["role"] == "assistant":
             for name in t["tool_uses"]:
@@ -346,7 +363,27 @@ def measure_post_recall(turns: list[dict], recall_ts: float) -> dict:
                 out["tool_use_breakdown"][name] = (
                     out["tool_use_breakdown"].get(name, 0) + 1
                 )
+    # next_user 없음 + recall 후 SESSION_GAP_SEC 안에 어떤 user turn 도 없으면
+    # abandoned 로 표시. window 가 ±30분으로 잘려 있어 next_user 가 None 인 경우
+    # = 그 안에서 형이 더 안 응답 = 사실상 abandoned.
+    if out["next_user_text"] is None:
+        out["abandoned"] = True
     return out
+
+
+def implicit_fp_signal(post: dict) -> str | None:
+    """measure_post_recall 결과 → implicit FP 약한 신호 분류.
+
+    - 'short_next_user': 다음 user turn 길이 < SHORT_NEXT_USER_CHARS
+    - 'abandoned': 다음 user turn 없이 30분 경과
+    - None: 신호 없음
+    """
+    if post.get("abandoned"):
+        return "abandoned"
+    chars = post.get("next_user_chars", -1)
+    if 0 <= chars < SHORT_NEXT_USER_CHARS:
+        return "short_next_user"
+    return None
 
 
 def has_negative_cue(text: str) -> bool:
@@ -439,23 +476,29 @@ def analyze_recent(
 
     per_event: list[dict] = []
     effort_values: list[int] = []
-    fp_count = 0
-    fp_known = 0
+    fp_strong = 0  # explicit negative cue
+    fp_known_explicit = 0  # next_user_text 식별 가능 — explicit FP 분모
+    fp_implicit_short = 0  # 짧은 다음 user turn
+    fp_implicit_abandoned = 0  # 다음 user turn 없음
     for e in events:
         ts_unix = e["_ts_unix"]
-        # turns 중 ts ± 30분 윈도우만 보고 후속 분석 (불필요한 전체 순회 회피).
         window = [
             t for t in all_turns if ts_unix - 1 <= t["ts_unix"] <= ts_unix + 1800
         ]
         post = measure_post_recall(window, ts_unix)
         effort = post["tool_use_count"]
         effort_values.append(effort)
-        fp = False
+        fp_explicit = False
         if post["next_user_text"]:
-            fp = has_negative_cue(post["next_user_text"])
-            fp_known += 1
-            if fp:
-                fp_count += 1
+            fp_explicit = has_negative_cue(post["next_user_text"])
+            fp_known_explicit += 1
+            if fp_explicit:
+                fp_strong += 1
+        implicit = implicit_fp_signal(post)
+        if implicit == "short_next_user":
+            fp_implicit_short += 1
+        elif implicit == "abandoned":
+            fp_implicit_abandoned += 1
         per_event.append({
             "ts": e.get("ts"),
             "picked": e.get("picked"),
@@ -464,8 +507,14 @@ def analyze_recent(
             "internal_effort": effort,
             "tool_breakdown": post["tool_use_breakdown"],
             "next_user_known": post["next_user_text"] is not None,
-            "false_positive": fp,
+            "false_positive_explicit": fp_explicit,
+            "false_positive_implicit": implicit,
         })
+
+    fp_combined = (
+        fp_strong + fp_implicit_short + fp_implicit_abandoned
+    )
+    fp_combined_rate = (fp_combined / total) if total else 0.0
 
     effort_stats = _effort_stats(effort_values)
     return {
@@ -476,13 +525,23 @@ def analyze_recent(
         "hit_rate": (picked / total) if total else 0.0,
         "avg_internal_effort": effort_stats["avg"],
         "internal_effort": effort_stats,
-        "intent_stats": intent_stats,  # hook 분류기 운영 분포
-        "false_positive_known": fp_known,
-        "false_positive_count": fp_count,
-        "false_positive_rate": (fp_count / fp_known) if fp_known else 0.0,
+        "intent_stats": intent_stats,
+        # explicit (negative cue) — Sprint 15 기존 metric
+        "false_positive_known": fp_known_explicit,
+        "false_positive_count": fp_strong,
+        "false_positive_rate": (
+            (fp_strong / fp_known_explicit) if fp_known_explicit else 0.0
+        ),
+        # implicit (Sprint 15 #1 보강)
+        "false_positive_implicit": {
+            "short_next_user": fp_implicit_short,
+            "abandoned": fp_implicit_abandoned,
+            "combined_strong_implicit": fp_combined,
+            "combined_rate_over_total": fp_combined_rate,
+        },
         "self_affirming_memories": scan_self_affirming_memories(),
         "per_event_count": len(per_event),
-        "per_event_sample": per_event[:5],  # 큰 출력 회피
+        "per_event_sample": per_event[:5],
     }
 
 
@@ -556,10 +615,18 @@ def format_report(summary: dict) -> str:
         f"  histogram: 0={hist.get('0', 0)}  1={hist.get('1', 0)}  "
         f"2-4={hist.get('2-4', 0)}  5+={hist.get('5+', 0)}",
         f"  long-tail ratio (5+ tool_use): {eff.get('long_tail_ratio', 0)*100:.1f}%",
-        f"false positive rate: {summary['false_positive_rate']*100:.1f}% "
+        f"false positive (explicit negative cue): {summary['false_positive_rate']*100:.1f}% "
         f"({summary['false_positive_count']}/{summary['false_positive_known']}, "
-        f"표본=다음 user turn 식별 가능한 recall)",
+        f"표본=다음 user turn 식별 가능)",
     ]
+    impl = summary.get("false_positive_implicit") or {}
+    if impl:
+        lines.append(
+            f"false positive (implicit, 약한 신호): "
+            f"short_next_user={impl.get('short_next_user', 0)}  "
+            f"abandoned={impl.get('abandoned', 0)}  "
+            f"combined_rate_over_total={impl.get('combined_rate_over_total', 0)*100:.1f}%"
+        )
     intent = summary.get("intent_stats") or {}
     by_intent = intent.get("by_intent") or {}
     if by_intent:

@@ -222,15 +222,17 @@ class TestMeasurePostRecall(unittest.TestCase):
                 "ts_unix": 1025,
                 "role": "assistant",
                 "text": "",
-                "tool_uses": ["Read"],  # 이건 다음 recall 의 영역
+                "tool_uses": ["Read"],
             },
         ]
         out = measure_post_recall(turns, recall_ts=1001)
-        self.assertEqual(out["tool_use_count"], 3)  # Read, Bash, Bash
+        self.assertEqual(out["tool_use_count"], 3)
         self.assertEqual(
             out["tool_use_breakdown"], {"Read": 1, "Bash": 2}
         )
         self.assertEqual(out["next_user_text"], "관계없는데")
+        self.assertEqual(out["next_user_chars"], len("관계없는데"))
+        self.assertFalse(out["abandoned"])
 
     def test_no_next_user(self):
         from self_eval import measure_post_recall
@@ -243,6 +245,33 @@ class TestMeasurePostRecall(unittest.TestCase):
         out = measure_post_recall(turns, recall_ts=1001)
         self.assertEqual(out["tool_use_count"], 1)
         self.assertIsNone(out["next_user_text"])
+        self.assertEqual(out["next_user_chars"], -1)
+        self.assertTrue(out["abandoned"])
+
+
+class TestImplicitFpSignal(unittest.TestCase):
+    def test_short_next_user(self):
+        from self_eval import implicit_fp_signal
+        post = {"abandoned": False, "next_user_chars": 5}
+        self.assertEqual(implicit_fp_signal(post), "short_next_user")
+
+    def test_abandoned(self):
+        from self_eval import implicit_fp_signal
+        post = {"abandoned": True, "next_user_chars": -1}
+        self.assertEqual(implicit_fp_signal(post), "abandoned")
+
+    def test_normal_no_signal(self):
+        from self_eval import implicit_fp_signal
+        post = {"abandoned": False, "next_user_chars": 50}
+        self.assertIsNone(implicit_fp_signal(post))
+
+    def test_exact_boundary(self):
+        """경계값 14자 → short, 15자 → no signal."""
+        from self_eval import implicit_fp_signal, SHORT_NEXT_USER_CHARS
+        post14 = {"abandoned": False, "next_user_chars": SHORT_NEXT_USER_CHARS - 1}
+        post15 = {"abandoned": False, "next_user_chars": SHORT_NEXT_USER_CHARS}
+        self.assertEqual(implicit_fp_signal(post14), "short_next_user")
+        self.assertIsNone(implicit_fp_signal(post15))
 
 
 class TestScanSelfAffirming(unittest.TestCase):
