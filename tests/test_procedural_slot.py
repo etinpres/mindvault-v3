@@ -290,6 +290,97 @@ class TestSessionEndStagedSlot(unittest.TestCase):
                 self.assertNotIn("_procedural", str(p2))
 
 
+class TestSlugConflictResolution(unittest.TestCase):
+    """Sprint NEXT-6 — session 안 동일 slug 다중 candidate 처리."""
+
+    def _make_writer(self):
+        written = []
+        def writer(item, sid, slug_override=None):
+            written.append((item["title"], slug_override))
+            return True
+        return writer, written
+
+    def test_distinct_slugs_all_stage(self):
+        from session_memory_end import _stage_with_conflict_resolution
+        writer, _ = self._make_writer()
+        n = _stage_with_conflict_resolution(
+            [
+                {"title": "topic-a", "body": "a", "type": "feedback"},
+                {"title": "topic-b", "body": "b", "type": "feedback"},
+            ],
+            set(), "sid", writer,
+        )
+        self.assertEqual(n, 2)
+
+    def test_same_slug_different_body_suffix(self):
+        from session_memory_end import _stage_with_conflict_resolution
+        writer, written = self._make_writer()
+        n = _stage_with_conflict_resolution(
+            [
+                {"title": "same", "body": "a", "type": "feedback"},
+                {"title": "same", "body": "b", "type": "feedback"},
+                {"title": "same", "body": "c", "type": "feedback"},
+            ],
+            set(), "sid", writer,
+        )
+        self.assertEqual(n, 3)
+        slugs = [s for _, s in written]
+        self.assertEqual(slugs, ["same", "same_2", "same_3"])
+
+    def test_same_slug_same_body_deduped(self):
+        from session_memory_end import _stage_with_conflict_resolution
+        writer, _ = self._make_writer()
+        n = _stage_with_conflict_resolution(
+            [
+                {"title": "dup", "body": "x", "type": "feedback"},
+                {"title": "dup", "body": "x", "type": "feedback"},
+            ],
+            set(), "sid", writer,
+        )
+        self.assertEqual(n, 1)
+
+    def test_existing_memory_collision_no_update_of_skip(self):
+        from session_memory_end import _stage_with_conflict_resolution
+        writer, _ = self._make_writer()
+        n = _stage_with_conflict_resolution(
+            [{"title": "exists", "body": "a", "type": "feedback"}],
+            {"exists"}, "sid", writer,
+        )
+        self.assertEqual(n, 0)
+
+    def test_existing_memory_collision_with_update_of_allows(self):
+        from session_memory_end import _stage_with_conflict_resolution
+        writer, _ = self._make_writer()
+        n = _stage_with_conflict_resolution(
+            [
+                {
+                    "title": "exists",
+                    "body": "updated",
+                    "type": "feedback",
+                    "update_of": "/x/exists.md",
+                }
+            ],
+            {"exists"}, "sid", writer,
+        )
+        self.assertEqual(n, 1)
+
+    def test_writer_failure_does_not_block_progression(self):
+        from session_memory_end import _stage_with_conflict_resolution
+        calls = []
+        def writer(item, sid, slug_override=None):
+            calls.append(item["title"])
+            return item["title"] != "skip-this"
+        n = _stage_with_conflict_resolution(
+            [
+                {"title": "skip-this", "body": "a", "type": "feedback"},
+                {"title": "ok", "body": "b", "type": "feedback"},
+            ],
+            set(), "sid", writer,
+        )
+        self.assertEqual(n, 1)
+        self.assertEqual(calls, ["skip-this", "ok"])
+
+
 class TestReviewCliRoutes(unittest.TestCase):
     def test_promote_target_dir(self):
         import memory_review_cli as mrc

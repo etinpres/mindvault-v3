@@ -80,10 +80,13 @@ def existing_slugs() -> set[str]:
     return slugs
 
 
-def write_staged(item: dict, session_id: str) -> Path | None:
+def write_staged(
+    item: dict, session_id: str, slug_override: str | None = None
+) -> Path | None:
+    """staged 파일 작성. slug_override 로 충돌 회피 suffix 부여 가능 (Sprint NEXT-6)."""
     staged_dir = staged_dir_for(item["type"])
     staged_dir.mkdir(parents=True, exist_ok=True)
-    slug = slugify(item["title"])
+    slug = slug_override if slug_override is not None else slugify(item["title"])
     ts = time.strftime("%Y%m%d-%H%M%S")
     filename = f"{ts}_{item['type']}_{slug}.md"
     path = staged_dir / filename
@@ -109,6 +112,44 @@ def write_staged(item: dict, session_id: str) -> Path | None:
     except OSError as e:
         _debug(f"write fail {filename}: {e}")
         return None
+
+
+def _stage_with_conflict_resolution(
+    candidates: list[dict],
+    existing_slugs_set: set,
+    session_id: str,
+    writer,
+) -> int:
+    """Sprint NEXT-6: session 안 동일 slug 다중 candidate 처리.
+
+    - 기존 memory 와 slug 충돌 + update_of 없음 → skip (file overwrite 방지)
+    - session 안 동일 slug + body 완전 동일 → skip (dedup, 정보 손실 아님)
+    - session 안 동일 slug + body 다름 → `_2`, `_3` suffix 로 모두 살림
+    writer(item, session_id, slug_override=...) -> Path | None 콜백.
+    """
+    session_slug_bodies: dict[str, list[str]] = {}
+    written = 0
+    for item in candidates:
+        s_base = slugify(item["title"])
+        body = (item.get("body") or "").strip()
+        if s_base in existing_slugs_set and not item.get("update_of"):
+            _debug(f"dup slug vs existing {s_base}, skip")
+            continue
+        prev_bodies = session_slug_bodies.setdefault(s_base, [])
+        if body and body in prev_bodies:
+            _debug(f"dup body in session {s_base}, skip")
+            continue
+        s_final = (
+            s_base if not prev_bodies else f"{s_base}_{len(prev_bodies) + 1}"
+        )
+        prev_bodies.append(body)
+        if writer(item, session_id, slug_override=s_final):
+            written += 1
+            # NOTE: existing_slugs_set 에 추가하지 않음 — session 안 추적은
+            # session_slug_bodies 가 담당. existing_slugs_set 는 "file system 의
+            # 기존 memory" 만 의미해야, 동일 session 안의 다음 candidate 가
+            # 잘못 "기존 충돌" 로 skip 되지 않는다.
+    return written
 
 
 def main() -> int:
@@ -151,15 +192,9 @@ def main() -> int:
             _debug(f"compile skipped: {type(e).__name__}: {e}")
 
         slugs = existing_slugs()
-        written = 0
-        for item in candidates:
-            s = slugify(item["title"])
-            if s in slugs:
-                _debug(f"dup slug {s}, skip")
-                continue
-            if write_staged(item, sid):
-                written += 1
-                slugs.add(s)
+        written = _stage_with_conflict_resolution(
+            candidates, slugs, sid, write_staged
+        )
         _debug(f"session {sid[:8]}: staged {written}/{len(candidates)}")
         return 0
     except Exception as e:
