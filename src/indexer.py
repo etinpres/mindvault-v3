@@ -254,11 +254,44 @@ def _init_db(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    _migrate_schema(conn)
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
         (str(SCHEMA_VERSION),),
     )
     conn.commit()
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """schema_version → SCHEMA_VERSION 까지 차분 ALTER 적용.
+
+    audit-2026-05-24: 기존엔 `CREATE TABLE IF NOT EXISTS` 만으로 idempotent
+    init 했으나 컬럼 추가가 들어가면 silent skip. 빈 골격을 두고 향후
+    sprint 에서 마이그레이션 step 만 추가하면 되도록.
+
+    NOTE: 새 step 추가 시 (1) `SCHEMA_VERSION` 상수도 함께 증가, (2) step
+    안에서 `current = N` 갱신, (3) 멱등성 보장(`IF NOT EXISTS`/`OR IGNORE`).
+    SCHEMA_VERSION 증가를 잊으면 다음 호출에서 early-out 으로 silent skip.
+    """
+    try:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key='schema_version'"
+        ).fetchone()
+    except sqlite3.DatabaseError:
+        row = None
+    try:
+        current = int(row[0]) if row and row[0] else 0
+    except (TypeError, ValueError):
+        current = 0
+    # current → SCHEMA_VERSION 차분 적용. 비어 있어도 OK — 첫 install 또는
+    # 이미 최신. step 추가 시 `if current < N: conn.execute(...); current = N`.
+    if current >= SCHEMA_VERSION:
+        return
+    # 예시 step (향후 컬럼 추가 시):
+    #   if current < 4:
+    #       conn.execute("ALTER TABLE memories ADD COLUMN tags TEXT")
+    #       current = 4
+    return
 
 
 def open_db(db_path: Path = DB_PATH) -> sqlite3.Connection:

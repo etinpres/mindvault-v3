@@ -18,6 +18,7 @@ import sqlite3
 import sys
 import time
 import traceback
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -54,12 +55,23 @@ def _debug(msg: str) -> None:
         pass
 
 
+_FTS_TOKEN_RE = re.compile(r"[가-힣A-Za-z0-9_]+")
+
+
 def fts_escape(query: str) -> str:
-    """사용자 쿼리를 FTS5 MATCH 안전 문자열로 변환. 각 단어를 quote, AND 결합."""
-    words = re.findall(r"[^\s\"'`*:()]+", query)
-    if not words:
+    """사용자 쿼리를 FTS5 MATCH 안전 문자열로 변환.
+
+    NEXT-30.2 (2026-05-24) 동기화 — `memory_search._fts_escape` 와 동일 정책:
+    한글/영문/숫자 화이트리스트, 단독 숫자 제외, 2자 이상, prefix wildcard, OR 결합.
+    이전 `[^\\s\"'`*:()]+` AND 결합은 `.~?/-` 와 숫자를 흘려보내 sessions
+    검색 경로에서 silent FTS5 0건 회귀. raw_cosine + RRF 게이트가 false
+    positive 차단.
+    """
+    words = _FTS_TOKEN_RE.findall(query)
+    pat = [f"{w}*" for w in words if len(w) >= 2 and not w.isdigit()]
+    if not pat:
         return '""'
-    return " ".join(f'"{w}"' for w in words)
+    return " OR ".join(pat)
 
 
 def call_gemma(prompt: str, max_tokens: int = 1500) -> str | None:
@@ -86,7 +98,9 @@ def call_gemma(prompt: str, max_tokens: int = 1500) -> str | None:
         content = (choices[0].get("message") or {}).get("content") or ""
         content = content.strip()
         return content or None
-    except Exception as e:
+    except (TimeoutError, urllib.error.URLError, json.JSONDecodeError, OSError, ValueError) as e:
+        # audit-2026-05-24: BaseException(KeyboardInterrupt/_Timeout) 은
+        # 의도적으로 전파.
         _debug(f"gemma fail: {type(e).__name__} {e}")
         return None
 

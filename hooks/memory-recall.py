@@ -159,49 +159,81 @@ def _mtime_changed() -> bool:
 # child 가 이미 도는 중이면 굳이 새로 띄울 필요 없음.
 SPAWN_THROTTLE_SEC = 30
 SPAWN_LOCK = DATA_DIR / "reindex-spawn.lock"
+# audit-2026-05-24 Fix #9: _spawn_reindex 가 사용하므로 함수 정의 전에 둠.
+RECURSION_GUARD_ENV = "MV3_HOOK_RECURSION_GUARD"
 
 
 def _spawn_reindex() -> None:
     """incremental_index를 백그라운드로 분리 spawn. 결과 안 기다림.
 
     NEXT-27 throttle: SPAWN_LOCK 의 mtime 이 SPAWN_THROTTLE_SEC 이내면 skip.
+    audit-2026-05-24: TOCTOU race 차단 — `fcntl.flock(LOCK_EX|LOCK_NB)` 로
+    atomic 화. 동시 hook burst 시 한 process 만 lock 획득해 spawn,
+    나머지는 즉시 빠짐. spawn 완료 시 lock 파일에 1바이트 마커를 써서
+    "이전에 한 번이라도 spawn 됨" 을 표시 (size=0 이면 첫 호출이라 throttle 우회).
     """
+    import os  # noqa: WPS433  부모 env 보존 + lock fd
+    import fcntl  # noqa: WPS433  POSIX (macOS)
+    try:
+        SPAWN_LOCK.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(SPAWN_LOCK), os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError as e:
+        _debug(f"spawn lock open fail: {e}")
+        return
     try:
         try:
-            if SPAWN_LOCK.exists():
-                age = time.time() - SPAWN_LOCK.stat().st_mtime
-                if age < SPAWN_THROTTLE_SEC:
-                    return  # 이미 최근에 띄움
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            pass  # lock 읽기 실패 시 그냥 진행
-        # touch lock 먼저 — concurrent hook 호출 race 차단
+            return  # 다른 hook 이 spawn 처리 중 — 양보
         try:
-            SPAWN_LOCK.parent.mkdir(parents=True, exist_ok=True)
-            SPAWN_LOCK.touch()
+            st = os.fstat(fd)
+            # size=0 placeholder = 첫 spawn 이라 throttle 우회. size>0 + mtime
+            # 30s 이내면 최근 spawn 됐으니 skip.
+            if st.st_size > 0 and (time.time() - st.st_mtime) < SPAWN_THROTTLE_SEC:
+                return
         except OSError:
             pass
 
         scripts_path = ":".join(str(d) for d in SCRIPTS_DIRS if d.is_dir())
         code = (
             "import sys, os;"
-            f"sys.path[:0] = os.environ.get('MV3_SCRIPTS_PATH','').split(':');"
+            "sys.path[:0] = os.environ.get('MV3_SCRIPTS_PATH','').split(':');"
             "from memory_indexer import incremental_index;"
             "incremental_index()"
         )
         env = {"MV3_SCRIPTS_PATH": scripts_path, "PATH": ""}
-        # 부모 환경 변수 보존
-        import os
         env.update({k: v for k, v in os.environ.items() if k not in env})
         env["MV3_SCRIPTS_PATH"] = scripts_path
-        subprocess.Popen(
-            [sys.executable, "-c", code],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            env=env,
-        )
-    except Exception as e:
-        _debug(f"spawn reindex fail: {e}")
+        # Fix #6 (audit-2026-05-24): child 에 RECURSION_GUARD 전파 — 향후
+        # indexer 안에서 hook trigger 코드가 추가돼도 무한 재귀 차단.
+        env[RECURSION_GUARD_ENV] = "1"
+        # Fix #10 (audit-2026-05-24): marker 를 Popen 시도 *전* 에 박음 —
+        # Popen 이 OSError 로 실패해도 throttle 유지 (이전 동작: marker 안
+        # 박혀 size=0 유지 → 다음 hook 마다 재시도 폭주). 실패 후 30s 뒤
+        # 다음 시도 시 재진입 OK.
+        try:
+            os.pwrite(fd, b"1", 0)
+        except OSError:
+            pass
+        try:
+            subprocess.Popen(
+                [sys.executable, "-c", code],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                env=env,
+            )
+        except OSError as e:
+            _debug(f"spawn reindex Popen fail: {e}")
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 class _Timeout(BaseException):
@@ -235,9 +267,6 @@ def _format_output(results: list[dict]) -> str:
             lines.append(f"  발췌: {snippet}")
     lines.append("</system-reminder>")
     return "\n".join(lines) + "\n"
-
-
-RECURSION_GUARD_ENV = "MV3_HOOK_RECURSION_GUARD"
 
 
 def main() -> int:

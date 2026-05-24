@@ -19,9 +19,22 @@ from typing import Optional
 
 CACHE_DB = Path("~/.claude/mindvault-v3/extractor_cache.db").expanduser()
 CACHE_DISABLE_ENV = "MV3_EXTRACTOR_CACHE_DISABLE"
+DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
 
 _init_lock = threading.Lock()
 _initialized = False
+
+
+def _debug_cache(msg: str) -> None:
+    """audit-2026-05-24: cache BUSY/error 가시화 — 이전엔 silent swallow."""
+    try:
+        DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with DEBUG_LOG.open("a") as f:
+            f.write(
+                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] extractor-cache: {msg}\n"
+            )
+    except OSError:
+        pass
 
 
 def cache_enabled() -> bool:
@@ -77,7 +90,9 @@ def cache_get(prompt: str) -> Optional[list[dict]]:
         ).fetchone()
         if not row:
             return None
-        # hit 카운터 갱신 (best-effort, 실패해도 무시)
+        # hit 카운터 갱신 (best-effort, 실패해도 lookup 결과 반환).
+        # audit-2026-05-24: OperationalError(BUSY) 가시화 — 잦은 BUSY 면 cache
+        # 효과 저하 신호. silent swallow 였던 이전 동작에서 debug.log 가시.
         try:
             conn.execute(
                 "UPDATE extractor_cache SET hit_count=hit_count+1, "
@@ -85,8 +100,8 @@ def cache_get(prompt: str) -> Optional[list[dict]]:
                 (_now(), h),
             )
             conn.commit()
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as e:
+            _debug_cache(f"hit_count update fail: {type(e).__name__}: {e}")
         try:
             return json.loads(row[0])
         except json.JSONDecodeError:

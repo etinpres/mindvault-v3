@@ -225,16 +225,22 @@ def embed_text(text: str, kind: str = "passage") -> list[float] | None:
 
 
 def _safe_memory_path(path: Path, allowed_roots: list[Path]) -> bool:
-    """path가 allowed_roots 중 하나의 하위인지 (symlink resolve 포함)."""
+    """path가 allowed_roots 중 하나의 하위인지 (symlink resolve 포함).
+
+    audit-2026-05-24: strict=True 로 변경 — dangling symlink (등록 후 target
+    삭제) 가 traversal check 를 우회하던 잠재 회귀 차단. allowed_roots 의
+    `resolve` 는 (sources.json 등록 시 is_dir 확인됐다는 신뢰 하에) 관용적으로
+    strict=False 유지.
+    """
     try:
-        resolved = path.resolve(strict=False)
-    except OSError:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError):
         return False
     for root in allowed_roots:
         try:
             resolved.relative_to(root.resolve(strict=False))
             return True
-        except ValueError:
+        except (ValueError, OSError):
             continue
     return False
 
