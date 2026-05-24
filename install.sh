@@ -227,6 +227,36 @@ if [ -f "$REPO_DIR/src/memory_review_cli.py" ]; then
   chmod +x "$SCRIPTS_DIR/memory_review_cli.py"
 fi
 
+# post-ship: 런타임 import dependencies — 이전 install.sh 가 명시 누락한 채
+# 옛 매뉴얼 cp 로만 production 에 존재하던 파일들. 신규 환경에서 install.sh
+# 만 실행하면 hook 이 ImportError 로 silent fail 했음.
+#
+# 분류:
+#  - hook 직접 import: query_intent (memory-recall.py)
+#  - extractor 체인: extractor_cache, memory_compiler (session-memory-end)
+#  - turn 분할 캐시: turns_cache (recall_cli / search)
+#  - Sprint 16+: sources_cli (영구 source 등록), backfill_cli (vec 백필),
+#                dedup_cli (중복 정리), extractor_stats_cli (관측)
+#  - NEXT-31~33: alias_generator (alias_index 자산 생성)
+RUNTIME_EXTRA_SRC=(
+  "$REPO_DIR/src/query_intent.py"
+  "$REPO_DIR/src/extractor_cache.py"
+  "$REPO_DIR/src/memory_compiler.py"
+  "$REPO_DIR/src/turns_cache.py"
+  "$REPO_DIR/src/sources_cli.py"
+  "$REPO_DIR/src/backfill_cli.py"
+  "$REPO_DIR/src/dedup_cli.py"
+  "$REPO_DIR/src/extractor_stats_cli.py"
+  "$REPO_DIR/src/alias_generator.py"
+)
+for f in "${RUNTIME_EXTRA_SRC[@]}"; do
+  if [ -f "$f" ]; then
+    cp "$f" "$SCRIPTS_DIR/$(basename "$f")"
+    chmod +x "$SCRIPTS_DIR/$(basename "$f")"
+  fi
+done
+echo "✓ deployed runtime extras ($(echo "${RUNTIME_EXTRA_SRC[@]}" | wc -w | tr -d ' ') files) to $SCRIPTS_DIR"
+
 # 4.4a 옛 BGE-M3 plist migration (Sprint 9 이전 설치자 → Arctic-ko 전환)
 OLD_BGE_PLIST="$HOME/Library/LaunchAgents/com.yonghaekim.bge-m3-mlx.plist"
 if [ -f "$OLD_BGE_PLIST" ]; then
