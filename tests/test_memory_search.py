@@ -147,6 +147,59 @@ class TestRecallMemory(unittest.TestCase):
         self.assertIn("vec", all_sources)
 
 
+class TestFTSEscape(unittest.TestCase):
+    """post-ship: _fts_escape는 FTS5 special token을 절대 흘려보내면 안 됨.
+    debug.log 실측 회귀:
+      - 'next-33 진행' → 'no such column: 33'
+      - '~/bin/scan' → 'syntax error near "~"'
+      - '이거 뭐였지?' → 'syntax error near "?"'
+      - '.md 출력' → 'syntax error near "."'
+    """
+
+    def _exec_fts(self, query: str) -> None:
+        """빌드된 FTS5 식이 실제로 파싱 가능한지 inmemory DB 로 검증."""
+        from memory_search import _fts_escape
+        conn = sqlite3.connect(":memory:")
+        conn.execute(
+            "CREATE VIRTUAL TABLE t USING fts5(body, tokenize='unicode61')"
+        )
+        conn.execute("INSERT INTO t(body) VALUES ('warmup')")
+        fts_q = _fts_escape(query)
+        # 던져서 syntax error 나면 곧장 fail
+        conn.execute("SELECT rowid FROM t WHERE t MATCH ?", (fts_q,)).fetchall()
+        conn.close()
+
+    def test_strips_special_punctuation(self):
+        for q in [
+            "next-33 진행",
+            "~/bin/scan 동작 안 함",
+            "이거 뭐였지?",
+            ".md 출력",
+            "8개 후보",
+            "Phase.1 결과",
+            "description: 사용자",
+            "path/to/file.md",
+            "what's this",
+        ]:
+            with self.subTest(query=q):
+                self._exec_fts(q)  # 파싱 안 되면 sqlite3.DatabaseError
+
+    def test_pure_digit_tokens_dropped(self):
+        """단독 숫자(33, 8)는 FTS5에서 column 참조로 해석 — 반드시 제외."""
+        from memory_search import _fts_escape
+        out = _fts_escape("33 8 next 진행")
+        self.assertNotIn("33*", out)
+        self.assertNotIn("8*", out)
+        self.assertIn("next*", out)
+        self.assertIn("진행*", out)
+
+    def test_only_specials_fallback(self):
+        """전부 special 문자뿐이어도 죽지 말고 빈 매치로 fallback."""
+        self._exec_fts("???")
+        self._exec_fts("...")
+        self._exec_fts("~")
+
+
 class TestProceduralTypeGate(unittest.TestCase):
     """Sprint NEXT-4 — procedural path 는 raw_cosine 게이트가 +0.05 엄격."""
 

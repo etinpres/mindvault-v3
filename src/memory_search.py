@@ -167,6 +167,9 @@ def _alias_boost_paths(query: str) -> set[str]:
     return matched
 
 
+_FTS_TOKEN_RE = re.compile(r"[가-힣A-Za-z0-9_]+")
+
+
 def _fts_escape(query: str) -> str:
     """FTS5 MATCH 쿼리 생성.
 
@@ -174,18 +177,22 @@ def _fts_escape(query: str) -> str:
     AND 라 모든 토큰이 정확히 일치해야 hit. 한국어 활용형/조사/공백 변형으로
     "스캔해" vs "스캐너" 같은 변형이 no_candidates 870건의 큰 슬라이스였음.
     새 동작:
+    - 한글/영문/숫자만 토큰으로 인정 (`.~?/-:` 같은 특수문자는 FTS5 syntax 충돌)
+    - 단독 숫자 토큰 제외 (`33` 같은 숫자는 FTS5에서 column 참조로 해석)
     - 2자 이상 토큰만 사용 (1자 토큰 — 한국어 "안","함" 등 — 은 noise)
     - 각 토큰에 prefix wildcard (`word*`) 적용
     - OR 결합 — 하나라도 잡히면 candidate. RRF + raw_cosine 게이트가 false
       positive 차단.
+
+    post-ship fix (2026-05-24): 이전 `[^\\s\"'\\`*:()]+` 는 `.~?/-` 와 숫자를
+    그대로 흘려보내 'syntax error near "?"', 'no such column: 33' 등
+    debug.log 67건 fail 누적. 알파넘 화이트리스트로 전환.
     """
-    words = re.findall(r"[^\s\"'`*:()]+", query)
-    if not words:
-        return '""'
-    pat = [f"{w}*" for w in words if len(w) >= 2]
+    words = _FTS_TOKEN_RE.findall(query)
+    pat = [f"{w}*" for w in words if len(w) >= 2 and not w.isdigit()]
     if not pat:
-        # 모든 토큰이 1자면 fallback — phrase 그대로 (희소 케이스)
-        return " ".join(f'"{w}"' for w in words)
+        # 모든 토큰이 무효(공백·특수문자·1자·순수숫자) → 빈 매치
+        return '""'
     return " OR ".join(pat)
 
 
