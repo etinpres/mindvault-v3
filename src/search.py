@@ -137,7 +137,12 @@ def vec_candidates(
     sids: list[str] = []
     valid = 0
     for r in rows:
-        arr = np.frombuffer(r["embedding"], dtype=np.float32)
+        emb = r["embedding"]
+        # NEXT-28 sentinel(빈 bytes) — 메타-only jsonl 무한 재시도 차단용.
+        # 의도된 빈 row 이므로 silent skip, log noise 제거.
+        if not emb:
+            continue
+        arr = np.frombuffer(emb, dtype=np.float32)
         if arr.shape != (EMBED_DIM,):
             _debug(f"skip bad vec dim {arr.shape} sid={r['session_id']}")
             continue

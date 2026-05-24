@@ -231,7 +231,11 @@ def _vec_top_k(
     mat = np.zeros((len(rows), EMBED_DIM), dtype=np.float32)
     meta: list[tuple[str, str]] = []
     for i, r in enumerate(rows):
-        arr = np.frombuffer(r["embedding"], dtype=np.float32)
+        emb = r["embedding"]
+        if not emb:
+            # NEXT-28 sentinel — 빈 bytes 는 의도된 무한-재시도 차단. silent.
+            continue
+        arr = np.frombuffer(emb, dtype=np.float32)
         if arr.shape != (EMBED_DIM,):
             _debug(f"skip bad vec dim {arr.shape} path={r['path']}")
             continue
