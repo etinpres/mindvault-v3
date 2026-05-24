@@ -289,10 +289,22 @@ def _parse_memory_file(path: Path) -> tuple[dict, str] | None:
     return fm, redact(body)
 
 
-def _acquire_lock():
-    """flock(LOCK_NB) — 동시 실행 차단. lock 못 잡으면 None."""
-    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    fh = LOCK_PATH.open("w")
+def _lock_path_for(db_path: Path | None) -> Path:
+    """db_path 와 같은 디렉토리에 lock 위치 — production 은 DATA_DIR/index.db
+    페어로 DATA_DIR/memory-indexer.lock 유지, 테스트는 tmp_db 페어로 tmp 격리."""
+    if db_path is None or Path(db_path).resolve() == DB_PATH.resolve():
+        return LOCK_PATH
+    return Path(db_path).parent / "memory-indexer.lock"
+
+
+def _acquire_lock(db_path: Path | None = None):
+    """flock(LOCK_NB) — 동시 실행 차단. lock 못 잡으면 None.
+    post-ship: db_path 인자 추가 — 테스트가 tmp_db 사용 시 lock 도 tmp 로
+    분리되어 production ~/.claude/mindvault-v3/ 오염 차단.
+    """
+    lock_path = _lock_path_for(db_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = lock_path.open("w")
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         return fh
@@ -329,7 +341,7 @@ def incremental_index(
         db_path = DB_PATH
 
     counts = {"updated": 0, "skipped": 0, "removed": 0}
-    lock = _acquire_lock()
+    lock = _acquire_lock(db_path)
     if lock is None:
         _debug("lock busy — skip")
         return counts

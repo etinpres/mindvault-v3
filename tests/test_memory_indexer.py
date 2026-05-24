@@ -131,6 +131,32 @@ class TestIncrementalIndex(unittest.TestCase):
         self.assertEqual(result["skipped"], 0)
         self.assertEqual(result["removed"], 0)
 
+    def test_lock_stays_in_db_dir_not_production(self):
+        """post-ship 회귀 — incremental_index(db_path=tmp) 가 production
+        ~/.claude/mindvault-v3/memory-indexer.lock 을 생성하면 안 됨."""
+        from memory_indexer import incremental_index, LOCK_PATH
+        prod_existed_before = LOCK_PATH.exists()
+        prod_mtime_before = LOCK_PATH.stat().st_mtime if prod_existed_before else None
+        with patch("memory_indexer.embed_text", side_effect=_fake_embed):
+            incremental_index([self.fixture_dir], db_path=self.tmp_db)
+        # tmp 디렉토리에 lock 이 생성됐는지
+        tmp_lock = self.tmp_db.parent / "memory-indexer.lock"
+        self.assertTrue(
+            tmp_lock.exists(),
+            f"tmp lock 미생성: {tmp_lock}",
+        )
+        # production lock 이 새로 만들어지거나 mtime 갱신되지 않았어야 함
+        if prod_existed_before:
+            self.assertEqual(
+                LOCK_PATH.stat().st_mtime, prod_mtime_before,
+                "production lock mtime 이 갱신됨 — leak",
+            )
+        else:
+            self.assertFalse(
+                LOCK_PATH.exists(),
+                f"production lock 새로 생성됨: {LOCK_PATH}",
+            )
+
         conn = sqlite3.connect(str(self.tmp_db))
         count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
         self.assertEqual(count, 3)
