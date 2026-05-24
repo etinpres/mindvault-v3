@@ -23,6 +23,11 @@ RECALL_SKILL_TARGET="$COMMANDS_DIR/recall.md"
 END_SRC="$REPO_DIR/src/session_memory_end.py"
 END_TARGET="$HOOKS_DIR/session-memory-end.py"
 END_CMD="$END_TARGET"
+# NEXT-23/24 (2026-05-24): async wrapper (macOS 호환 nohup+&+disown).
+# wrapper 가 SessionEnd hook 를 백그라운드로 detach — Claude Code 종료 시 SIGTERM 회피.
+# setsid 사용한 옛 버전은 macOS 에 setsid 없어서 첫 줄 fail.
+END_WRAPPER_SRC="$REPO_DIR/hooks/session-memory-end-async.sh"
+END_WRAPPER_TARGET="$HOOKS_DIR/session-memory-end-async.sh"
 SPRINT3_SRC=("$REPO_DIR/src/memory_extractor.py" "$REPO_DIR/src/memory_review_cli.py")
 MEMORY_SKILL_SRC="$REPO_DIR/skill/memory_review.md"
 MEMORY_SKILL_TARGET="$COMMANDS_DIR/memory_review.md"
@@ -64,6 +69,13 @@ if [ -f "$END_SRC" ]; then
   cp "$END_SRC" "$END_TARGET"
   chmod +x "$END_TARGET"
   echo "✓ copied SessionEnd hook to $END_TARGET"
+fi
+# NEXT-24: async wrapper sync. wrapper 가 깨지면 Claude Code 가 hook subprocess
+# 강제 종료 → Gemma 호출 도중 SIGTERM → staged 안 됨. install 재실행 시 자동 회복.
+if [ -f "$END_WRAPPER_SRC" ]; then
+  cp "$END_WRAPPER_SRC" "$END_WRAPPER_TARGET"
+  chmod +x "$END_WRAPPER_TARGET"
+  echo "✓ copied SessionEnd async wrapper to $END_WRAPPER_TARGET"
 fi
 for f in "${SPRINT3_SRC[@]}"; do
   if [ -f "$f" ]; then
