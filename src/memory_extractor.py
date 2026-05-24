@@ -13,7 +13,7 @@ import traceback
 import urllib.request
 from pathlib import Path
 
-DATA_DIR = Path("/Users/yonghaekim/.claude/mindvault-v3")
+DATA_DIR = Path("~/.claude/mindvault-v3").expanduser()
 DEBUG_LOG = DATA_DIR / "debug.log"
 GEMMA_URL = "http://localhost:8080/v1/chat/completions"
 GEMMA_MODEL = "mlx-community/gemma-4-e4b-it-4bit"
@@ -37,7 +37,7 @@ TRIGGER_RE = re.compile(
 
 # Sprint NEXT-1 자동 trigger 휴리스틱 — assistant 의 Bash tool_use 안 명령어가
 # 특수 binary 또는 non-trivial 한 모양인데, 직후 user 가 다음 액션을 지시하면
-# (한국어 사용자 패턴상 "ok/굿" 같은 confirmation 보다 "진행/적용/켜줘" 형이 흔하다)
+# (한국어 사용자 패턴상 "ok/굿" 같은 confirmation 보다 "진행/적용/켜줘" 사용자가 흔하다)
 # Gemma 가 보고 procedural candidate 만들 가치 있다고 본다. trigger ON.
 SPECIAL_BIN_RE = re.compile(
     r"\b(?:launchctl|sqlite3|ffprobe|ffmpeg|yt-dlp|higgsfield|kubectl|gcloud|"
@@ -52,7 +52,7 @@ NEXT_ACTION_RE = re.compile(
 
 # Sprint NEXT-10 — ACK 휴리스틱. NEXT-1 (다음 액션 지시) 과 보완 관계:
 # NEXT-1 은 "진행/적용/켜줘" 같은 NEXT_ACTION 시그널을 잡고, NEXT-10 은
-# "좋아/OK/ㅇㅇ/굿" 같은 단순 confirmation 을 잡는다. 형의 한국어 응답 패턴상
+# "좋아/OK/ㅇㅇ/굿" 같은 단순 confirmation 을 잡는다. 사용자의 한국어 응답 패턴상
 # 한 줄 ACK 가 가장 흔한 결정 confirmation 시그널 — backfill 24/1 hit ratio
 # (NEXT-8 BUILD-LOG §5) 가 노출한 extractor recall 한계의 1차 해소책.
 #

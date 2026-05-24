@@ -8,7 +8,7 @@ allowed-tools: Bash
 
 1. Bash 도구로 실행:
    ```
-   python3 /Users/yonghaekim/.claude/scripts/mindvault/memory_review_cli.py list
+   python3 "$HOME/.claude/scripts/mindvault/memory_review_cli.py" list
    ```
 
 2. stdout에 `{"staged":[{"file":"...","type":"...","title":"...","body":"...","reason":"...","evidence":"...","age_days":N}]}` JSON이 나온다.

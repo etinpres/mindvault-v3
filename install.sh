@@ -236,8 +236,10 @@ if [ -f "$OLD_BGE_PLIST" ]; then
 fi
 
 # 4.4 Arctic-ko launchd plist
+# 템플릿 placeholder(__USER_HOME__) 를 현재 $HOME 으로 치환한 뒤 설치.
+# sed delimiter 로 `|` 사용 (path 에 `/` 가 들어가므로).
 if [ -f "$ARCTIC_PLIST_SRC" ]; then
-  cp "$ARCTIC_PLIST_SRC" "$ARCTIC_PLIST_TARGET"
+  sed "s|__USER_HOME__|$HOME|g" "$ARCTIC_PLIST_SRC" > "$ARCTIC_PLIST_TARGET"
   launchctl unload "$ARCTIC_PLIST_TARGET" >/dev/null 2>&1 || true
   launchctl load -w "$ARCTIC_PLIST_TARGET" 2>/dev/null || true
   echo "✓ Arctic-ko launchd service loaded (port 8081)"

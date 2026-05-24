@@ -13,7 +13,7 @@ import sys
 import time
 from pathlib import Path
 
-DATA_DIR = Path("/Users/yonghaekim/.claude/mindvault-v3")
+DATA_DIR = Path("~/.claude/mindvault-v3").expanduser()
 DEBUG_LOG = DATA_DIR / "debug.log"
 METRICS_LOG = DATA_DIR / "metrics.jsonl"
 MIN_PROMPT_LEN = 4  # 너무 짧은 키워드는 skip. 잡담은 raw cosine 게이트가 차단.
@@ -25,10 +25,16 @@ RAW_COSINE_MIN_HINTED = 0.32   # Sprint 9 Arctic-ko 분포 비례 완화
 
 # 회수 의도 명확 키워드 (있으면 임계값 ↓)
 RECALL_HINTS = ("예전에", "그때", "이전에", "지난번", "어제", "전에", "옛날에", "저번에")
-MEMORY_DIRS = [
-    Path("/Users/yonghaekim/.claude/projects/-Users-yonghaekim/memory"),
-    Path("/Users/yonghaekim/.claude/projects/-Users-yonghaekim-my-folder/memory"),
-]
+# Claude Code 가 cwd 마다 별도 projects 슬롯을 만들기 때문에 런타임 glob 으로
+# 모든 슬롯의 memory 디렉토리를 흡수한다. (~/.claude/projects/*/memory)
+def _discover_memory_dirs() -> list[Path]:
+    root = Path("~/.claude/projects").expanduser()
+    if not root.is_dir():
+        return []
+    return sorted(p for p in root.glob("*/memory") if p.is_dir())
+
+
+MEMORY_DIRS = _discover_memory_dirs()
 # Sprint 11: env var `MV3_EXTRA_MEMORY_DIRS=path1:path2` — _mtime_changed가 이
 # 디렉토리들도 watch해야 indexer trigger 일관. _spawn_reindex가 부모 env 보존하므로
 # indexer 본체는 자체적으로 같은 env 읽어 처리.
@@ -62,7 +68,7 @@ INDEX_DB = DATA_DIR / "index.db"
 # import 경로 — production(배포본) + dev(repo) 둘 다 지원
 _HOOK_FILE = Path(__file__).resolve()
 SCRIPTS_DIRS = [
-    Path("/Users/yonghaekim/.claude/scripts/mindvault"),
+    Path("~/.claude/scripts/mindvault").expanduser(),
     _HOOK_FILE.parent.parent / "src",
 ]
 
@@ -235,7 +241,7 @@ def main() -> int:
 
         from memory_search import recall_memory  # noqa: WPS433
 
-        # 회수 단서어 있으면 임계값 완화 (형 의도 명확)
+        # 회수 단서어 있으면 임계값 완화 (사용자 의도 명확)
         has_hint = (
             intent_label == "recall"
             or any(h in prompt for h in RECALL_HINTS)

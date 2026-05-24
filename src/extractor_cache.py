@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-CACHE_DB = Path("/Users/yonghaekim/.claude/mindvault-v3/extractor_cache.db")
+CACHE_DB = Path("~/.claude/mindvault-v3/extractor_cache.db").expanduser()
 CACHE_DISABLE_ENV = "MV3_EXTRACTOR_CACHE_DISABLE"
 
 _init_lock = threading.Lock()

@@ -22,17 +22,21 @@ from pathlib import Path
 
 import numpy as np
 
-# 경로 — worktree에서도 같은 메모리 디렉토리 참조
-MEMORY_DIRS = [
-    Path("/Users/yonghaekim/.claude/projects/-Users-yonghaekim/memory"),
-    Path("/Users/yonghaekim/.claude/projects/-Users-yonghaekim-my-folder/memory"),
-]
+# 경로 — Claude Code 가 cwd 마다 생성하는 모든 projects 슬롯의 memory 디렉토리.
+def _discover_memory_dirs() -> list[Path]:
+    root = Path("~/.claude/projects").expanduser()
+    if not root.is_dir():
+        return []
+    return sorted(p for p in root.glob("*/memory") if p.is_dir())
+
+
+MEMORY_DIRS = _discover_memory_dirs()
 
 BGE_M3_URL = "http://localhost:8081/embed"
 ARCTIC_KO_URL = "http://localhost:8082/embed"
 TIMEOUT = 15
 
-# 형이 실제로 회수하려는 도메인 (eval_top3_domain.py에서 복사)
+# 사용자가 실제로 회수하려는 도메인 (eval_top3_domain.py에서 복사)
 RELEVANT_QUERIES = [
     "메일 보내는 sendmail SMTP 설정",
     "EPSON 스캐너 CLI 자동 크롭",

@@ -4,7 +4,7 @@
 Sprint 15 BUILD-LOG §"미해결" #5 해소.
 
 Sprint 14 의 Memory Compiler 는 opt-in (MV3_AUTO_COMPILE=1) 상태라 운영 fire 0건.
-형이 켜기 전에 Gemma 정제 호출의 latency·성공률·응답 길이 분포를 안전하게 측정.
+사용자가 켜기 전에 Gemma 정제 호출의 latency·성공률·응답 길이 분포를 안전하게 측정.
 
 설계:
 - 3 시나리오 (short/medium/long) × N회 반복 호출
@@ -70,7 +70,7 @@ SCENARIOS = [
         {
             "title": "MindVault v3 progress",
             "body": (
-                "Sprint 17 ship 형 결정 영역. 운영 sync 완료. dedup_cli 인프라 추가. "
+                "Sprint 17 ship 사용자 결정 영역. 운영 sync 완료. dedup_cli 인프라 추가. "
                 "test isolation 5건 fix. handoff/V3-PLAN 정식 add. classifier 분포 측정. "
                 "internal effort 빈 user turn 필터 후 avg 21+. procedural coverage 0%."
             ),

@@ -8,7 +8,7 @@ Sprint 11/12/15 BUILD-LOG §"미해결" 의 duplicate memory 우려 해소.
 
   - name-dup: frontmatter `name` (lowercase strip) 동일. 진짜 의미 dup.
               Memory Compiler 로 본문 통합 후 1건만 유지 권장.
-  - stem-collision: 파일명(stem) 동일·name 다름. 형이 같은 슬러그로 별개 메모리
+  - stem-collision: 파일명(stem) 동일·name 다름. 사용자가 같은 슬러그로 별개 메모리
                     만든 경우. 본문 비교 후 rename 또는 둘 다 보존.
 
 자동 삭제는 안 함 — list/merge/rename 모두 명시 호출. .bak 백업 후 작업.
@@ -36,7 +36,7 @@ from memory_indexer import (  # noqa: E402
     parse_frontmatter,
 )
 
-DATA_DIR = Path("/Users/yonghaekim/.claude/mindvault-v3")
+DATA_DIR = Path("~/.claude/mindvault-v3").expanduser()
 DEBUG_LOG = DATA_DIR / "debug.log"
 
 

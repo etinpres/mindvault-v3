@@ -28,8 +28,8 @@ from self_eval import (  # noqa: E402
     load_turns,
 )
 
-CACHE_DB = Path("/Users/yonghaekim/.claude/mindvault-v3/turns_cache.db")
-DEBUG_LOG = Path("/Users/yonghaekim/.claude/mindvault-v3/debug.log")
+CACHE_DB = Path("~/.claude/mindvault-v3/turns_cache.db").expanduser()
+DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
 
 
 def _debug(msg: str) -> None:

@@ -1,6 +1,6 @@
 ---
 name: test-mail
-description: "Gmail SMTP 발송 도구 — msmtp + Python 래퍼로 dr.ocean@gmail.com 발송"
+description: "Gmail SMTP 발송 도구 — msmtp + Python 래퍼로 user@example.com 발송"
 metadata:
   type: feedback
 ---

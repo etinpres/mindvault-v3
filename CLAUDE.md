@@ -12,7 +12,7 @@ MindVault v3 — Claude Code 세션 간 기억 유지 시스템. MindVault v1의
 
 1. **자동 주입 (Layer 1)** — SessionStart 훅에서 최근 N개 세션을 Gemma 로컬 서버로 요약해 새 세션에 자동 주입
 2. **자연어 검색 (Layer 2)** — FTS5 + Arctic-ko 임베딩 hybrid (RRF) 로 과거 모든 세션·메모리 검색 가능. `/recall` 스킬로 호출
-3. **Memory Compiler (Layer 3)** — 세션 종료 시 Gemma 가 결정/노하우/사실을 추출 → `memory/_procedural/_staged/` 임시 저장 → 형의 `/memory_review` 승인 후 영구 메모리 진입 (Sprint 13~14)
+3. **Memory Compiler (Layer 3)** — 세션 종료 시 Gemma 가 결정/노하우/사실을 추출 → `memory/_procedural/_staged/` 임시 저장 → 사용자의 `/memory_review` 승인 후 영구 메모리 진입 (Sprint 13~14)
 4. **자동 회수 hook (Layer 4)** — UserPromptSubmit 마다 hybrid 검색으로 관련 메모리를 `system-reminder` 로 자동 주입 (raw cosine 게이트 + query intent classifier 가 잡담 차단, false positive 0%)
 
 ### 핵심 원칙 (MindVault v1 실패 교훈)
@@ -32,7 +32,7 @@ MindVault v3 — Claude Code 세션 간 기억 유지 시스템. MindVault v1의
 
 ### 데이터 소스
 
-Claude Code JSONL 로그: `~/.claude/projects/*/` 하위 모든 디렉토리의 `*.jsonl`. 형이 `cd` 위치에 따라 별도 projects 폴더(`-Users-yonghaekim`, `-Users-yonghaekim-my-folder`, `-Users-yonghaekim-my-folder-apps-*` 등)가 자동 생성되므로 모두 흡수 (Sprint 6).
+Claude Code JSONL 로그: `~/.claude/projects/*/` 하위 모든 디렉토리의 `*.jsonl`. 사용자가 `cd` 위치에 따라 별도 projects 폴더(예: cwd=`/Users/<user>` → `-Users-<user>`, cwd=`/Users/<user>/foo` → `-Users-<user>-foo`)가 자동 생성되므로 모두 흡수 (Sprint 6).
 
 ### 최종 배포 경로 (완성 시)
 

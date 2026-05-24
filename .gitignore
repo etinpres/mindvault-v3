@@ -7,3 +7,11 @@ __pycache__/
 
 # Claude Code 워크스페이스 메타 (워크트리·로컬 skills 캐시)
 .claude/
+
+# Internal sprint/handoff history — personal author workflow
+handoff/
+docs/superpowers/
+
+# OS / editor
+.DS_Store
+*.swp

@@ -25,7 +25,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-DATA_DIR = Path("/Users/yonghaekim/.claude/mindvault-v3")
+DATA_DIR = Path("~/.claude/mindvault-v3").expanduser()
 DB_PATH = DATA_DIR / "index.db"
 DEBUG_LOG = DATA_DIR / "debug.log"
 GEMMA_URL = "http://localhost:8080/v1/chat/completions"

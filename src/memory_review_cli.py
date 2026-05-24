@@ -14,13 +14,26 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
 import traceback
 from pathlib import Path
 
-PROJECTS_DIR = Path("/Users/yonghaekim/.claude/projects/-Users-yonghaekim-my-folder")
+
+def _default_projects_dir() -> Path:
+    """현재 사용자 $HOME 으로부터 Claude Code 프로젝트 슬롯 경로 파생.
+    `MV3_PROJECTS_DIR` 환경변수로 override 가능.
+    """
+    override = os.environ.get("MV3_PROJECTS_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    home_slug = "-" + str(Path.home()).strip("/").replace("/", "-")
+    return Path("~/.claude/projects").expanduser() / home_slug
+
+
+PROJECTS_DIR = _default_projects_dir()
 MEMORY_DIR = PROJECTS_DIR / "memory"
 STAGED_DIR = MEMORY_DIR / "_staged"
 # Sprint 13: procedural slot 분리. list/approve/reject/prune 모두 양쪽 staged
@@ -29,10 +42,10 @@ PROCEDURAL_DIR = MEMORY_DIR / "_procedural"
 PROCEDURAL_STAGED_DIR = PROCEDURAL_DIR / "_staged"
 STAGED_DIRS = (STAGED_DIR, PROCEDURAL_STAGED_DIR)
 INDEX_MD = MEMORY_DIR / "MEMORY.md"
-DEBUG_LOG = Path("/Users/yonghaekim/.claude/mindvault-v3/debug.log")
+DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
 STAGED_TTL_DAYS = 30
 
-# Sprint NEXT-5 — ANSI 색상 diff 출력. 형이 매 update 검토 시 +/- 식별 비용 ↓.
+# Sprint NEXT-5 — ANSI 색상 diff 출력. 사용자가 매 update 검토 시 +/- 식별 비용 ↓.
 ANSI_RESET = "\033[0m"
 ANSI_RED = "\033[31m"
 ANSI_GREEN = "\033[32m"

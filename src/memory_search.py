@@ -31,8 +31,8 @@ def embed_text(query: str) -> list[float] | None:
     """쿼리 임베딩 wrapper — Arctic-ko 학습 설정상 "query: " prefix 자동 부착."""
     return _embed_text_base(query, kind="query")
 
-DB_PATH = Path("/Users/yonghaekim/.claude/mindvault-v3/index.db")
-DEBUG_LOG = Path("/Users/yonghaekim/.claude/mindvault-v3/debug.log")
+DB_PATH = Path("~/.claude/mindvault-v3/index.db").expanduser()
+DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
 RRF_K = 60
 DESCRIPTION_WEIGHT = 1.5
 DEFAULT_TOP_K = 1  # 보수적: 절대 우수한 1건만. V1 토큰 낭비 회피.

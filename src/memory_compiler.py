@@ -39,7 +39,7 @@ from memory_indexer import (  # noqa: E402
     parse_frontmatter,
 )
 
-DATA_DIR = Path("/Users/yonghaekim/.claude/mindvault-v3")
+DATA_DIR = Path("~/.claude/mindvault-v3").expanduser()
 DEBUG_LOG = DATA_DIR / "debug.log"
 GEMMA_URL = "http://localhost:8080/v1/chat/completions"
 GEMMA_MODEL = "mlx-community/gemma-4-e4b-it-4bit"

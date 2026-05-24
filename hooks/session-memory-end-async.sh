@@ -32,7 +32,7 @@ cat > "$TMP_STDIN" 2>/dev/null || true
 # Gemma 호출 도중 죽음. subshell + nohup + disown 으로 macOS 호환 detach.
 (
   trap 'rm -f "$TMP_STDIN"' EXIT
-  nohup /usr/bin/env python3 /Users/yonghaekim/.claude/hooks/session-memory-end.py < "$TMP_STDIN" >/dev/null 2>&1
+  nohup /usr/bin/env python3 "$HOME/.claude/hooks/session-memory-end.py" < "$TMP_STDIN" >/dev/null 2>&1
 ) </dev/null >/dev/null 2>&1 &
 disown
 exit 0

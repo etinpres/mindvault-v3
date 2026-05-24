@@ -19,7 +19,7 @@ import json
 import sys
 from pathlib import Path
 
-DATA_DIR = Path("/Users/yonghaekim/.claude/mindvault-v3")
+DATA_DIR = Path("~/.claude/mindvault-v3").expanduser()
 CONFIG_PATH = DATA_DIR / "sources.json"
 
 

@@ -19,9 +19,9 @@ from indexer import extract_head_turns_body  # noqa: E402
 from search import recall, _embed_query, vec_candidates, fts_candidates  # noqa: E402
 import sqlite3  # noqa: E402
 
-DB_PATH = Path("/Users/yonghaekim/.claude/mindvault-v3/index.db")
+DB_PATH = Path("~/.claude/mindvault-v3/index.db").expanduser()
 
-# RELEVANT 쿼리 — 형이 실제로 작업한 도메인. 한 줄 쿼리는 형이 회수하려는
+# RELEVANT 쿼리 — 사용자가 실제로 작업한 도메인. 한 줄 쿼리는 사용자가 회수하려는
 # 의도를 모방. 도메인이 너무 좁으면 매칭 어려워 의도가 잘 드러나는 한 줄.
 RELEVANT_QUERIES = [
     "메일 보내는 sendmail SMTP 설정",

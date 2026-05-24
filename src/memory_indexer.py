@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-DATA_DIR = Path("/Users/yonghaekim/.claude/mindvault-v3")
+DATA_DIR = Path("~/.claude/mindvault-v3").expanduser()
 DB_PATH = DATA_DIR / "index.db"
 DEBUG_LOG = DATA_DIR / "debug.log"
 LOCK_PATH = DATA_DIR / "memory-indexer.lock"
@@ -38,10 +38,18 @@ EMBED_TIMEOUT = 5  # seconds — 인덱싱 시점은 hook과 별개라 여유
 EMBED_DIM = 1024
 # Sprint 9: BGE-M3 → Arctic-Embed-L v2.0 KO 교체. CLS pooling + L2 normalized.
 # 서버가 "kind" 필드를 사용 (query → "query: " prefix 자동 부착).
-DEFAULT_MEMORY_DIRS = [
-    Path("/Users/yonghaekim/.claude/projects/-Users-yonghaekim/memory"),
-    Path("/Users/yonghaekim/.claude/projects/-Users-yonghaekim-my-folder/memory"),
-]
+# Claude Code 가 cwd 마다 별도 projects 슬롯을 만들기 때문에
+# (예: cwd=`/Users/<user>` → `~/.claude/projects/-Users-<user>/`,
+# cwd=`/Users/<user>/foo` → `~/.claude/projects/-Users-<user>-foo/`) 런타임 glob 으로
+# 모든 슬롯의 memory 디렉토리를 흡수한다. 사용자가 직접 슬러그를 입력할 필요 없음.
+def _discover_memory_dirs() -> list[Path]:
+    root = Path("~/.claude/projects").expanduser()
+    if not root.is_dir():
+        return []
+    return sorted(p for p in root.glob("*/memory") if p.is_dir())
+
+
+DEFAULT_MEMORY_DIRS = _discover_memory_dirs()
 # Sprint 11: env var `MV3_EXTRA_MEMORY_DIRS=path1:path2` 로 추가 indexing 디렉토리.
 # 예: handoff/ 폴더에 sprint 별 brief/build-log 두는 환경에서 그 콘텐츠를 회수
 # 가능하게. hook의 _spawn_reindex가 부모 env 보존하므로 shell rc에 export 1회면

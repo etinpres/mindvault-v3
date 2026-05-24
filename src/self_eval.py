@@ -9,7 +9,7 @@
 
 자동 게이트 조정은 의도적으로 미구현 — 잘못 학습된 loop 가 게이트를 망가뜨릴
 위험이 더 큼 (V3-PLAN §7 위험 매트릭스). 본 sprint 는 metric 노출까지. 게이트
-조정은 형이 분석 결과 보고 수동 결정.
+조정은 사용자가 분석 결과 보고 수동 결정.
 """
 from __future__ import annotations
 
@@ -23,13 +23,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-DATA_DIR = Path("/Users/yonghaekim/.claude/mindvault-v3")
+DATA_DIR = Path("~/.claude/mindvault-v3").expanduser()
 DEFAULT_METRICS = DATA_DIR / "metrics.jsonl"
-DEFAULT_PROJECTS_ROOT = Path("/Users/yonghaekim/.claude/projects")
+DEFAULT_PROJECTS_ROOT = Path("~/.claude/projects").expanduser()
 DEBUG_LOG = DATA_DIR / "debug.log"
 
 # Sprint 15: hook 회수 직후 다음 사용자 turn 에서 자주 나타나는 negative cue 패턴.
-# 형이 "이거 관계없는데" 식으로 받아치면 그 회수는 false positive 강력 신호.
+# 사용자가 "이거 관계없는데" 식으로 받아치면 그 회수는 false positive 강력 신호.
 # 단어 단위 안정 매칭 — 너무 짧은 부분 매칭(예: "없")으로 일반 부정문이 잡히지 않게
 # context 단어 묶어서.
 NEGATIVE_CUE_RE = re.compile(
@@ -409,7 +409,7 @@ def _is_system_reminder(text: str) -> bool:
 
 
 # Sprint 15 #3: SessionStart / 세션 요약 hook 가 user role 로 jsonl 에 주입하는
-# Gemma·Claude system prompt 패턴. 형 직접 발화가 아니라 hook artifact 이므로
+# Gemma·Claude system prompt 패턴. 사용자 직접 발화가 아니라 hook artifact 이므로
 # classifier 분포·false positive 측정 시 표본에서 제외해야 정확.
 HOOK_INJECTED_PREFIXES = (
     "다음은 Claude Code 세션",
@@ -524,7 +524,7 @@ def measure_post_recall(turns: list[dict], recall_ts: float) -> dict:
                 )
     # next_user 없음 + recall 후 SESSION_GAP_SEC 안에 어떤 user turn 도 없으면
     # abandoned 로 표시. window 가 ±30분으로 잘려 있어 next_user 가 None 인 경우
-    # = 그 안에서 형이 더 안 응답 = 사실상 abandoned.
+    # = 그 안에서 사용자가 더 안 응답 = 사실상 abandoned.
     if out["next_user_text"] is None:
         out["abandoned"] = True
     return out

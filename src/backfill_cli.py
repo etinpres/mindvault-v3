@@ -22,9 +22,9 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-PROJECTS_ROOT = Path("/Users/yonghaekim/.claude/projects")
-DEBUG_LOG = Path("/Users/yonghaekim/.claude/mindvault-v3/debug.log")
-HOOK = Path("/Users/yonghaekim/.claude/hooks/session-memory-end.py")
+PROJECTS_ROOT = Path("~/.claude/projects").expanduser()
+DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
+HOOK = Path("~/.claude/hooks/session-memory-end.py").expanduser()
 
 # debug.log 라인 형식: [2026-05-24 09:54:41] session-end: jsonl missing for 949a8635
 MISSING_RE = re.compile(

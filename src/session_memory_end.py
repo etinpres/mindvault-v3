@@ -26,7 +26,7 @@ if (_HOOK_DIR / "memory_extractor.py").is_file():
     if str(_HOOK_DIR) not in sys.path:
         sys.path.insert(0, str(_HOOK_DIR))
 else:
-    _PROD = Path("/Users/yonghaekim/.claude/scripts/mindvault")
+    _PROD = Path("~/.claude/scripts/mindvault").expanduser()
     if _PROD.is_dir() and str(_PROD) not in sys.path:
         sys.path.insert(0, str(_PROD))
 
@@ -44,10 +44,20 @@ os.environ.setdefault("MV3_EXTRACTOR_ALWAYS_FIRE", "1")
 
 from memory_extractor import extract_from_jsonl  # type: ignore  # noqa: E402
 
-PROJECTS_ROOT = Path("/Users/yonghaekim/.claude/projects")
-# memory 저장 base 는 항상 -Users-yonghaekim-my-folder 슬롯 (단일 원천).
-# 단, jsonl 탐색은 PROJECTS_ROOT 의 모든 하위 슬롯에서 — Sprint 6 indexer 와 동일.
-PROJECTS_DIR = PROJECTS_ROOT / "-Users-yonghaekim-my-folder"
+PROJECTS_ROOT = Path("~/.claude/projects").expanduser()
+# memory 저장 base 는 현재 사용자 $HOME 에서 파생된 Claude Code 프로젝트 슬롯
+# (단일 원천 of truth). 예: HOME=/Users/alice → 슬러그 `-Users-alice`.
+# `MV3_PROJECTS_DIR` 환경변수로 override 가능. jsonl 탐색은 PROJECTS_ROOT 의 모든
+# 하위 슬롯에서 — Sprint 6 indexer 와 동일.
+def _default_projects_dir() -> Path:
+    override = os.environ.get("MV3_PROJECTS_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    home_slug = "-" + str(Path.home()).strip("/").replace("/", "-")
+    return PROJECTS_ROOT / home_slug
+
+
+PROJECTS_DIR = _default_projects_dir()
 MEMORY_DIR = PROJECTS_DIR / "memory"
 STAGED_DIR = MEMORY_DIR / "_staged"
 # Sprint 13: procedural type 후보는 _procedural/_staged/ 슬롯에 저장. 결정 메모리와
@@ -55,7 +65,7 @@ STAGED_DIR = MEMORY_DIR / "_staged"
 # 양쪽 staged 모두 스캔.
 PROCEDURAL_DIR = MEMORY_DIR / "_procedural"
 PROCEDURAL_STAGED_DIR = PROCEDURAL_DIR / "_staged"
-DEBUG_LOG = Path("/Users/yonghaekim/.claude/mindvault-v3/debug.log")
+DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
 
 
 def staged_dir_for(memory_type: str) -> Path:

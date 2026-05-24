@@ -17,12 +17,24 @@ import time
 import traceback
 from pathlib import Path
 
-PROJECTS_DIR = Path("/Users/yonghaekim/.claude/projects/-Users-yonghaekim-my-folder")
-CACHE_DIR = Path("/Users/yonghaekim/.claude/mindvault-v3/cache")
-DEBUG_LOG = Path("/Users/yonghaekim/.claude/mindvault-v3/debug.log")
+def _default_projects_dir() -> Path:
+    """현재 사용자 $HOME 으로부터 Claude Code 프로젝트 슬롯 경로 파생.
+    예: HOME=/Users/alice → ~/.claude/projects/-Users-alice/.
+    `MV3_PROJECTS_DIR` 환경변수로 override 가능.
+    """
+    override = os.environ.get("MV3_PROJECTS_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    home_slug = "-" + str(Path.home()).strip("/").replace("/", "-")
+    return Path("~/.claude/projects").expanduser() / home_slug
+
+
+PROJECTS_DIR = _default_projects_dir()
+CACHE_DIR = Path("~/.claude/mindvault-v3/cache").expanduser()
+DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
 SIGNATURE = "# 지난 세션 요약 (MindVault v3)"
 RECURSION_GUARD_ENV = "MV3_HOOK_RECURSION_GUARD"
-CLAUDE_FALLBACK_PATH = "/Users/yonghaekim/.nvm/versions/node/v24.13.0/bin/claude"
+CLAUDE_FALLBACK_PATH = os.path.expanduser("~/.nvm/versions/node/v24.13.0/bin/claude")
 CLAUDE_MODEL = "haiku"
 CLAUDE_TIMEOUT = 90  # subprocess cap (startup + plugin sync + model 합쳐서 여유)
 
@@ -209,7 +221,7 @@ def call_gemma(prompt: str, max_tokens: int = 2000) -> str | None:
     env = os.environ.copy()
     env[RECURSION_GUARD_ENV] = "1"
     # nvm bin 경로를 PATH에 추가 (hook 환경 PATH가 빈약할 때 보강)
-    nvm_bin = "/Users/yonghaekim/.nvm/versions/node/v24.13.0/bin"
+    nvm_bin = os.path.expanduser("~/.nvm/versions/node/v24.13.0/bin")
     env["PATH"] = nvm_bin + ":" + env.get("PATH", "/usr/bin:/bin")
 
     try:
@@ -343,9 +355,7 @@ def emit_output(summary: str) -> None:
 def purge_staged_memory() -> None:
     """Sprint 3: memory/_staged/ 30일 경과 파일 청소."""
     try:
-        staged = Path(
-            "/Users/yonghaekim/.claude/projects/-Users-yonghaekim-my-folder/memory/_staged"
-        )
+        staged = PROJECTS_DIR / "memory" / "_staged"
         if not staged.is_dir():
             return
         cutoff = time.time() - 30 * 86400
@@ -364,7 +374,7 @@ def trigger_background_indexer() -> None:
     실패해도 Sprint 1 훅 결과는 이미 출력되어 있으므로 조용히 무시."""
     try:
         import subprocess
-        indexer = Path("/Users/yonghaekim/.claude/scripts/mindvault/indexer.py")
+        indexer = Path("~/.claude/scripts/mindvault/indexer.py").expanduser()
         if not indexer.is_file():
             return
         subprocess.Popen(

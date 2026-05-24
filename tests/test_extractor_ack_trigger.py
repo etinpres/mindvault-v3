@@ -1,7 +1,7 @@
 """Sprint NEXT-10 — ACK 휴리스틱 trigger 테스트.
 
 검증 대상:
-- ACK_RE: 형의 한국어/영어 단순 confirmation 패턴 매칭 + 잡담 false positive 차단
+- ACK_RE: 사용자의 한국어/영어 단순 confirmation 패턴 매칭 + 잡담 false positive 차단
 - _is_significant_assistant: bash_commands OR text ≥ 200자
 - has_trigger: significant assistant + 짧은 ACK 결합 시 True (NEXT-10 분기)
 - MV3_EXTRACTOR_ACK_TRIGGER=0 환경 변수로 OFF 가능 (재로드 검증)
@@ -47,7 +47,7 @@ class TestAckRegex(unittest.TestCase):
             "다음 단계로 진행",
             "왜 그런지 설명해줘",
             "OK 그럼 다음은 어떻게 가야 할까?",  # 길이는 짧지만 질문 — ACK 패턴 ^...$ 다 매칭 안 됨
-            "안녕 형 오늘 뭐해",
+            "안녕 사용자 오늘 뭐해",
             "음 잘 모르겠는데 한 번 더 봐줄래",
         ]
         for txt in negatives:

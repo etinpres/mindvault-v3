@@ -8,7 +8,7 @@ allowed-tools: Bash
 
 1. Bash 도구로 정확히 아래 명령을 실행 (따옴표 포함, --source 기본 both):
    ```
-   python3 /Users/yonghaekim/.claude/scripts/mindvault/recall_cli.py "$ARGUMENTS"
+   python3 "$HOME/.claude/scripts/mindvault/recall_cli.py" "$ARGUMENTS"
    ```
 
 2. 스크립트는 stdout에 한 줄 JSON을 출력한다. 형태:

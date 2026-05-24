@@ -1,80 +1,182 @@
 # MindVault v3
 
-Claude Code 세션 간 기억 유지 시스템. **4-layer 파이프라인**으로 세션 요약 자동 주입(SessionStart), FTS5+Gemma 풀텍스트 검색(`/recall`), SessionEnd staging+승인, 그리고 매 메시지마다 발동하는 임베딩+FTS5 hybrid 회수 hook까지. 로컬 Gemma + Arctic-Embed-L v2.0 KO (MLX 4bit) 서버라 API 비용 0원. Sprint 9에서 한국어 도메인 분리 11배 향상, Sprint 13~16 + NEXT-1~20 에서 procedural memory slot · Memory Compiler · Self-eval · query intent classifier 추가 (Karpathy LLM-as-Compiler 패턴 실증).
+> Claude Code의 영구 기억 시스템. 4-layer 파이프라인으로 세션 요약 자동 주입 · 자연어 검색 · Memory Compiler · 자동 회수까지.
 
-## Status
+**v3.0.0** · Karpathy LLM-as-Compiler 패턴 실증 · macOS · MIT license · 296 tests passed
 
-| Layer | 상태 | 기능 |
-|---|---|---|
-| 1. SessionStart 자동 주입 | ✅ 배포 | 최근 5세션 Gemma 요약 자동 주입. 캐시 히트 ~50ms |
-| 2. /recall 검색 | ✅ 배포 | JSONL FTS5 + Gemma 재순위/요약 (sessions), memory hybrid RRF (memory) |
-| 3. SessionEnd staging + /memory review | ✅ 배포 | 트리거 감지 → staged → 사용자 승인 → memory/*.md + reindex |
-| 4. UserPromptSubmit hook (Sprint 4) | ✅ 배포 | memory/*.md hybrid 검색을 매 메시지 자동 주입 (silent fail, ~150ms p95) |
+---
 
-4-layer 완성 (2026-05-22).
+## 무엇인가
 
-### v3 본체 (Sprint 13~16 + NEXT-1~20, 2026-05-23~24)
+Claude Code는 매 세션마다 컨텍스트 윈도우가 초기화됩니다. 어제 결정한 사실, 만들어 둔 CLI 위치, 진행 중인 프로젝트 상태 — 다음 세션을 열면 모두 사라집니다.
+
+MindVault v3는 그 망각의 빈 자리를 세 축으로 메웁니다:
+
+1. **세션 검색** — 모든 과거 .jsonl 로그를 SQLite FTS5 + 임베딩으로 인덱싱, `/recall` 자연어 검색
+2. **메모리 회수** — UserPromptSubmit 마다 hybrid 검색으로 관련 메모리를 system-reminder에 자동 주입
+3. **자동 컴파일** — SessionEnd 마다 로컬 Gemma가 그 세션에서 영구로 남길 가치가 있는 결정/노하우/사실을 추출, 검토 후 영구 메모리에 진입
+
+로컬 Gemma + Arctic-ko 임베딩 서버라 API 비용 0원, 데이터 외부 전송 없음.
+
+## 왜 이렇게 만들었나 (Karpathy LLM-as-Compiler)
+
+> "매 쿼리마다 모든 원문을 LLM에 다시 던지지 말고, LLM을 한 번 컴파일러처럼 써서 지식을 정제한 뒤 그 결과를 작은 메모리로 축적해 가라. 다음부터는 정제된 결과만 조회하면 된다."
+> — Andrej Karpathy, [LLM Wiki gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) (요약)
+
+```
+# 기존 RAG 패턴
+질문 → 외부 문서 N개 검색 → 그대로 컨텍스트에 붙임 → LLM이 매번 재해석
+  ↑ 매번 비용. 매번 같은 노이즈. 매번 같은 추론.
+
+# LLM-as-Compiler 패턴 (MindVault v3)
+세션 끝 → Gemma가 한 번 정제 → 작은 .md로 저장 → 다음부턴 정제본만 조회
+  ↑ 한 번 비용. 추출 후엔 깨끗한 신호. 누적되며 자기 강화.
+```
+
+## 핵심 개념 네 가지
+
+| 개념 | 정의 |
+|---|---|
+| **Session** | Claude Code 한 번의 대화 단위. `~/.claude/projects/*/<uuid>.jsonl` 한 파일이 한 세션. |
+| **Memory** | 다음 세션에도 쓸 가치가 있는 사실/결정/노하우. `memory/<kebab-name>.md` 한 파일이 한 메모리. |
+| **Recall** | UserPromptSubmit 시 hybrid 검색으로 관련 메모리를 자동 회수해 `system-reminder`로 주입. |
+| **Compile** | SessionEnd 시 Gemma가 로그를 읽고 새 메모리 후보를 `_procedural/_staged/` 에 자동 추출. |
+
+## 4-Layer 아키텍처
+
+| Layer | 책임 |
+|---|---|
+| **L1 — SessionStart 자동 주입** | 최근 5 세션을 Gemma로 요약해 새 세션에 자동 주입. 캐시 히트 ~50ms |
+| **L2 — `/recall` 자연어 검색** | JSONL FTS5 + Gemma 재순위 (sessions), Arctic-ko 임베딩 + FTS5 hybrid RRF (memory) |
+| **L3 — Memory Compiler** | SessionEnd → Gemma 정제 → `memory/_procedural/_staged/` → `/memory_review` 승인 후 영구 진입 |
+| **L4 — UserPromptSubmit hook** | 매 메시지 hybrid 검색 → 관련 메모리 system-reminder 주입. raw cosine 게이트 + query intent classifier가 잡담 차단 (false positive 0%) |
+
+## v3 본체 (Sprint 13~16 + NEXT-1~20)
 
 | Sprint | 주제 | 상태 |
 |---|---|---|
 | 13 | Procedural Memory Slot (`memory/_procedural/_staged/`) | ✅ |
 | 14 | Memory Compiler (SessionEnd → Gemma 정제 → staged) | ✅ `MV3_AUTO_COMPILE=1` |
-| 15 | Self-eval Loop (internal effort · false positive · 자기충족 탐지 8건) | ✅ |
+| 15 | Self-eval Loop (internal effort · false positive · 자기충족 탐지) | ✅ |
 | 16 | Query Intent Classifier + Multi-source 인덱싱 | ✅ |
-| NEXT-1~7 | 자동 trigger / embed match / Gemma classifier / type-gate / diff color / slug conflict / scan cache | ✅ |
-| NEXT-8 | PROJECTS_ROOT fix (dogfooding gap 해소, LLM-as-compiler 첫 실증) | ✅ |
-| NEXT-10~20 | ACK trigger · backfill · always-fire · cache · stats CLI · launchd 영구화 · v3 라벨 마이그레이션 | ✅ |
+| NEXT-1~7 | 자동 trigger · embed match · Gemma classifier · type-gate · diff color · slug conflict · scan cache | ✅ |
+| NEXT-8 | PROJECTS_ROOT fix (dogfooding gap 해소, LLM-as-Compiler 첫 실증) | ✅ |
+| NEXT-10~20 | ACK trigger · backfill · always-fire · cache · stats CLI · launchd 영구화 | ✅ |
 
-실측 (master `732dd79`): **296 tests passed**, false positive **0.0%**, internal effort **0.60**, hook hit rate ~**79%** (classifier 후 66.5%), 자기충족 메모리 탐지 **8건**, extractor nonzero rate **20% → 47%** (NEXT-14).
+**실측 (v3.0.0)**: 296 tests passed, false positive 0.0%, internal effort 0.60, hook hit rate ~79% (classifier 후 66.5%), 자기충족 메모리 탐지 8건, extractor nonzero rate 20% → 47%.
 
 ## 요구사항
 
-- macOS (Linux 미검증)
-- Python 3.10+
-- Claude Code
-- 로컬 Gemma MLX 서버가 `http://localhost:8080`에서 실행 중이어야 함
-  - `com.yonghaekim.gemma-mlx` launchd 서비스 권장
+- **macOS** (Linux 미검증)
+- **Python 3.10+**
+- **Claude Code** (hook 등록을 위해)
+- **로컬 Gemma MLX 서버** — `http://localhost:8080`
+  - 권장 launchd 서비스: `com.<author>.gemma-mlx`
   - 모델: `mlx-community/gemma-4-e4b-it-4bit`
-- **(Sprint 4+9)** 로컬 Arctic-ko MLX 서버가 `http://localhost:8081`에서 실행 중이어야 함
-  - `com.yonghaekim.arctic-ko-mlx` launchd 서비스 (install.sh가 자동 설치)
-  - 모델: `dragonkue/snowflake-arctic-embed-l-v2.0-ko` 원본을 MLX 4bit 양자화한 로컬 모델 (`~/.cache/mlx-arctic-ko/`)
-  - **수동 변환 1회 필요** (mlx-community에 4bit 양자화본 미존재) — 아래 'Arctic-ko 모델 변환' 참조
-  - 의존성: `pip install sqlite-vec mlx-embeddings pyyaml numpy huggingface_hub`
+- **로컬 Arctic-ko MLX 서버** — `http://localhost:8081` (install.sh가 자동 설치)
+  - 모델: `dragonkue/snowflake-arctic-embed-l-v2.0-ko` 의 MLX 4bit 양자화본 (`~/.cache/mlx-arctic-ko/`)
+  - **수동 변환 1회 필요** — 아래 "Arctic-ko 모델 변환" 참조
 
 ## 설치
 
 ```bash
+git clone https://github.com/etinpres/mindvault-v3.git
+cd mindvault-v3
 ./install.sh
 ```
 
 설치 내용:
-- `~/.claude/hooks/session-memory.py` 로 훅 스크립트 복사
-- `~/.claude/settings.json`의 `SessionStart` 배열에 훅 등록 (기존 훅 보존, `settings.json.bak` 자동 백업)
-- `~/.claude/mindvault-v3/cache/` 캐시 폴더 생성
+- `~/.claude/hooks/` 에 hook 스크립트들 복사
+- `~/.claude/scripts/mindvault/` 에 인덱서/검색 모듈 배포
+- `~/.claude/commands/` 에 `/recall`, `/memory_review` 스킬 등록
+- `~/.claude/settings.json` 의 hook 배열에 등록 (`.bak` 자동 백업)
+- Arctic-ko launchd 서비스 등록 (사용자별 `$HOME` 자동 치환)
+- 초기 인덱싱 1회 실행
 
-설치 확인: 새 `claude` 세션을 열면 시스템 리마인더에 `# 지난 세션 요약 (MindVault v3)` 블록이 나타난다.
+설치 확인: 새 `claude` 세션을 열면 system-reminder에 `# 지난 세션 요약 (MindVault v3)` 블록이 나타납니다.
 
-### Arctic-ko 모델 변환 (Sprint 9, 1회만 필요)
+### Arctic-ko 모델 변환 (1회만 필요)
 
-`install.sh` 가 launchd plist + 서버 스크립트 + 인덱스는 자동 배포하지만, **MLX 4bit 양자화 모델 자체**는 사용자가 직접 변환해야 합니다 (mlx-community 에 4bit 양자화본이 아직 없음).
+`install.sh` 가 launchd plist + 서버 스크립트 + 인덱스는 자동 배포하지만, MLX 4bit 양자화 모델 자체는 사용자가 직접 변환해야 합니다 (mlx-community에 4bit 양자화본이 아직 없음).
 
 ```bash
-# 의존성
 pip install --user mlx_embeddings huggingface_hub
-
-# 변환 (모델 ~1.1GB 다운로드 후 ~322MB 4bit 양자화, 총 1~2분)
 python3 -c "from mlx_embeddings.utils import convert; convert('dragonkue/snowflake-arctic-embed-l-v2.0-ko', mlx_path='$HOME/.cache/mlx-arctic-ko', quantize=True, q_bits=4)"
-
-# 결과 확인
-ls ~/.cache/mlx-arctic-ko/model.safetensors
-
-# install.sh 재실행 (또는 launchctl로 직접 로드)
-./install.sh
+./install.sh   # 재실행 (모델 인식 후 서비스 기동)
 ```
 
-변환된 모델은 `~/.cache/mlx-arctic-ko/` 에 영구 저장됩니다. 모델 자체는 한 번만 변환하면 됩니다 — 향후 install.sh 재실행 시 자동으로 skip.
+모델 ~1.1GB 다운로드 후 ~322MB 4bit 양자화, 총 1~2분. 결과는 `~/.cache/mlx-arctic-ko/`에 영구 저장.
 
-**왜 수동인가**: Snowflake Arctic Embed L v2.0 한국어 fine-tune(dragonkue) 의 4bit MLX 변환본이 아직 mlx-community 에 업로드돼 있지 않음. 변환은 1회용이고 결과가 안정적이라 자동화는 다음 sprint 로 미룸.
+## 사용
+
+### `/recall` — 자연어 검색
+
+```
+/recall 영어 학습 망각곡선
+/recall 이메일 SMTP 설정
+/recall MindVault 마이그레이션 결정
+```
+
+FTS5 (키워드) + Arctic-ko 임베딩 (의미) 두 결과를 RRF로 결합한 뒤 Gemma가 재순위. 관련 세션 + 메모리 동시 검색.
+
+### `/memory_review` — staged 메모리 검토
+
+SessionEnd마다 Gemma가 자동 추출한 메모리 후보는 `memory/_procedural/_staged/` 에 임시 저장됩니다. 자동으로 영구 메모리에 들어가지 않습니다 (silent failure 방지).
+
+```
+/memory_review              # staged 후보 목록
+/memory_review diff <slug>  # 기존 메모리 대비 diff
+/memory_review approve <slug>
+/memory_review discard <slug>
+```
+
+### 자동 회수
+
+UserPromptSubmit hook이 매 메시지마다 hybrid 검색을 돌립니다. 관련 메모리는 `<system-reminder>` 태그로 Claude의 컨텍스트에 자동 주입되며, 사용자가 명령을 내릴 필요가 없습니다.
+
+raw cosine 게이트 (default 0.79, 회수 단서어 시 0.76 완화) + query intent classifier (chat/meta/code/recall/unknown) 가 잡담 쿼리에서 무관 메모리 끼는 false positive를 차단합니다.
+
+## 자기-수정 메커니즘
+
+메모리 시스템의 echo chamber (잘못된 메모리가 자기를 강화) 방지 장치:
+
+- **자기충족 메모리 자동 탐지** — `scan_self_affirming_memories` 가 "v1 폐기 / v2 운영" 류 자기-진화 표현을 후보로 표시
+- **False positive 측정** — 회수 직후 사용자가 negative cue ("그거 아니야") 발화하는지 추적
+- **자기 모순 메모리** — 운영 누적 시 자동 탐지 → 검토 큐 진입
+- **Type-gate 분리** — procedural 타입은 raw cosine 게이트 0.05 더 엄격하게 (운영 노이즈 차단)
+
+## 설정
+
+`src/session_memory.py` 상단 상수 섹션:
+
+| 상수 | 기본값 | 설명 |
+|---|---|---|
+| `MAX_SESSIONS` | 5 | L1 요약 대상 세션 수 |
+| `MAX_HEAD_TURNS` | 6 | 각 세션 앞쪽 턴 수 |
+| `MAX_TAIL_TURNS` | 6 | 각 세션 뒤쪽 턴 수 |
+| `MAX_MSG_CHARS` | 200 | 각 메시지 최대 글자 |
+| `GEMMA_MAX_TOKENS` | 2000 | Gemma 응답 토큰 한도 |
+| `GEMMA_TIMEOUT` | 45 | Gemma 호출 타임아웃(초) |
+| `CACHE_DAYS` | 7 | 캐시 보존 기간 |
+
+### 환경 변수
+
+| 변수 | 기본 | 설명 |
+|---|---|---|
+| `MV3_AUTO_COMPILE` | 0 | SessionEnd Memory Compiler opt-in |
+| `MV3_EXTRACTOR_ALWAYS_FIRE` | 0 | trigger 휴리스틱 없이도 항상 추출 시도 |
+| `MV3_GEMMA_INTENT` | 0 | Query intent classifier에 Gemma 보강 opt-in |
+| `MV3_EXTRA_MEMORY_DIRS` | (empty) | 추가 메모리 디렉토리 (`:` 구분) |
+| `MV3_EXTRACTOR_CACHE_DISABLE` | 0 | extractor 결과 캐시 비활성화 |
+| `MV3_PROJECTS_DIR` | derived | primary memory base 디렉토리 (기본: `$HOME` 에서 자동 derive) |
+
+## 테스트
+
+```bash
+pytest tests/
+```
+
+296 tests passed, test isolation 0 fail. 네트워크/Gemma 불필요 (mocked).
 
 ## 제거
 
@@ -82,83 +184,65 @@ ls ~/.cache/mlx-arctic-ko/model.safetensors
 ./uninstall.sh
 ```
 
-훅 등록과 스크립트 파일만 제거. 캐시는 수동으로 지워야 함: `rm -rf ~/.claude/mindvault-v3`.
+훅 등록 + 스크립트 + 스킬 + launchd 4서비스 (arctic-ko-mlx, mv3-env, mv3-gemma-intent, mv3-stats-daily) 일괄 제거. Settings backup은 `~/.claude/settings.json.bak` 으로 자동 저장.
 
-## 테스트
-
+캐시 + 인덱스는 보존 (수동 삭제):
 ```bash
-cd apps/mindvault-v3
-pytest tests/
+rm -rf ~/.claude/mindvault-v3
+rm -rf ~/.cache/mlx-arctic-ko
 ```
 
-**296 tests passed** (master `732dd79`), test isolation 0 fail. 네트워크/Gemma 불필요 (mocked).
+## 알려진 한계
 
-## 동작 방식
-
-```
-[새 Claude 세션 시작]
-        ↓
-SessionStart 훅 실행 (session-memory.py)
-        ↓
-최근 5개 JSONL 찾기 (현재 세션 제외)
-        ↓
-파일 mtime 해시 → 캐시 확인
-   ├── 캐시 HIT (~50ms) → 즉시 주입
-   └── 캐시 MISS
-        ↓
-   JSONL 파싱 (user/assistant 텍스트만, 첫 6턴 + 마지막 6턴)
-        ↓
-   PII 패턴 마스킹 (sk-*, ghp_*, Bearer …)
-        ↓
-   Gemma 호출 (localhost:8080, 45초 타임아웃)
-        ↓
-   캐시 저장 + 컨텍스트 주입
-```
-
-에러(Gemma 다운, JSONL 없음, 파싱 실패)는 모두 조용히 패스하며 `exit 0`. 절대 세션 시작을 블로킹하지 않는다.
-
-## 설정
-
-`src/session_memory.py` 상수 섹션에서:
-
-| 상수 | 기본값 | 설명 |
-|---|---|---|
-| `MAX_SESSIONS` | 5 | 요약 대상 세션 수 |
-| `MAX_HEAD_TURNS` | 6 | 각 세션 앞쪽 턴 수 |
-| `MAX_TAIL_TURNS` | 6 | 각 세션 뒤쪽 턴 수 |
-| `MAX_MSG_CHARS` | 200 | 각 메시지 최대 글자 |
-| `GEMMA_MAX_TOKENS` | 2000 | Gemma 응답 토큰 한도 (reasoning 포함) |
-| `GEMMA_TIMEOUT` | 45 | Gemma 호출 타임아웃(초) |
-| `CACHE_DAYS` | 7 | 캐시 보존 기간 |
-
-## 제약 및 알려진 한계
-
-1. **Gemma 4 E4B는 reasoning 모델** — 내부 사고에 토큰 많이 소비, max_tokens 크게 잡아야 함
-2. **한국어 특화** — 프롬프트가 한국어로 최적화됨
+1. **Gemma 4 E4B는 reasoning 모델** — 내부 사고에 토큰 많이 소비, `GEMMA_MAX_TOKENS` 크게 잡아야 함
+2. **한국어 특화 프롬프트** — 프롬프트가 한국어로 최적화. 영어 도메인은 검색 품질 일부 저하 가능
 3. **PII 필터는 키 패턴만** — 이메일/전화는 로컬 전용이라 통과
 4. **세션 경계 = JSONL 파일** — 한 파일 안에서 주제 바뀌어도 하나로 간주
-
-## 자기-수정 메커니즘 (Sprint 15)
-
-메모리 시스템의 echo chamber(잘못된 메모리가 자기를 강화) 방지 장치:
-
-- **자기충족 메모리 자동 탐지** — `scan_self_affirming_memories` 가 "v1 폐기 / v2 운영" 류 자기-진화 표현을 후보로 표시 (현재 8건 탐지)
-- **False positive 측정** — 회수 직후 형이 negative cue("그거 아니야") 발화하는지 추적, 현재 **0.0%**
-- **Codex 독립 검증 default** — 큰 마이그레이션 직후 `codex:codex-rescue` 로 read-only 7카테고리 검증, Claude self-bias 회피
-- **라벨 진화 추론 금지** — `feedback-label-migration-not-intent` 메모리, "디렉토리·코드 불일치를 의도로 추론 금지" 룰
+5. **macOS 전용** — launchd 의존 (Linux는 systemd 변환 필요)
 
 ## 디버깅
 
-- 훅 실행 로그: `~/.claude/mindvault-v3/debug.log` (hook-recall, mem-indexer, mem-search prefix)
-- 캐시: `~/.claude/mindvault-v3/cache/*.txt`
-- Sprint 1 수동 실행: `echo '{"sessionId":"현재세션ID"}' | python3 ~/.claude/hooks/session-memory.py`
-- Sprint 4 hook 수동 실행: `echo '{"prompt":"테스트 쿼리"}' | python3 ~/.claude/hooks/memory-recall.py`
-- Arctic-ko 헬스체크: `curl http://localhost:8081/health`  # {"ok":true,"model":"arctic-ko-mlx-4bit","dim":1024}
-- Arctic-ko 재기동: `launchctl kickstart -k gui/$(id -u)/com.yonghaekim.arctic-ko-mlx`
-- Arctic-ko 로그: `tail ~/Library/Logs/arctic-ko-mlx.{log,err}`
-- 메모리 인덱스 강제 재구축: `python3 -c "import sys; sys.path.insert(0, '/Users/yonghaekim/.claude/scripts/mindvault'); from memory_indexer import full_rebuild; full_rebuild()"`
-- DB 상태: `python3 -c "import sqlite3; c=sqlite3.connect('/Users/yonghaekim/.claude/mindvault-v3/index.db'); [print(t, c.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]) for t in ('sessions','memories','memories_fts','memories_vec')]"`
+```bash
+# 훅 실행 로그
+tail ~/.claude/mindvault-v3/debug.log
+
+# 캐시
+ls ~/.claude/mindvault-v3/cache/
+
+# Arctic-ko 헬스체크
+curl http://localhost:8081/health
+# {"ok":true,"model":"arctic-ko-mlx-4bit","dim":1024}
+
+# Arctic-ko 재기동
+launchctl kickstart -k gui/$(id -u)/com.<author>.arctic-ko-mlx
+
+# 메모리 인덱스 강제 재구축
+python3 -c "
+import sys; from pathlib import Path
+sys.path.insert(0, str(Path.home() / '.claude/scripts/mindvault'))
+from memory_indexer import full_rebuild
+full_rebuild()
+"
+
+# DB 상태
+python3 -c "
+import sqlite3
+from pathlib import Path
+db = Path.home() / '.claude/mindvault-v3/index.db'
+c = sqlite3.connect(db)
+for t in ('sessions','memories','memories_fts','memories_vec'):
+    print(t, c.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0])
+"
+```
 
 ## 라이선스
 
-MIT
+MIT — 자세한 내용은 [LICENSE](LICENSE) 참조 (또는 별도 LICENSE 파일이 없는 경우 표준 MIT 적용).
+
+## 기여 / 영감
+
+이 프로젝트는 [Andrej Karpathy의 LLM Wiki gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) 의 LLM-as-Compiler 패턴을 Claude Code 환경에서 실증한 결과입니다.
+
+이전에 같은 저자가 만든 [etinpres/mindvault](https://github.com/etinpres/mindvault) (deprecated) 는 이 패턴을 잘못 이해한 채 진행한 첫 시도였습니다. v3는 그 postmortem 교훈을 반영한 재시도입니다 — Gemma가 실제로 메모리를 정제·합성하는 구조로.
+
+이슈와 PR을 환영합니다. macOS 외 플랫폼 포팅에 관심 있다면 환영합니다.

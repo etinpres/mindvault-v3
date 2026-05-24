@@ -24,17 +24,29 @@ from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
-DEBUG_LOG = Path("/Users/yonghaekim/.claude/mindvault-v3/debug.log")
+DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
+import os as _os_stats
+
+
+def _default_projects_dir() -> Path:
+    override = _os_stats.environ.get("MV3_PROJECTS_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    home_slug = "-" + str(Path.home()).strip("/").replace("/", "-")
+    return Path("~/.claude/projects").expanduser() / home_slug
+
+
+_PROJECTS_DIR = _default_projects_dir()
 STAGED_DIRS = (
-    Path("/Users/yonghaekim/.claude/projects/-Users-yonghaekim-my-folder/memory/_staged"),
-    Path("/Users/yonghaekim/.claude/projects/-Users-yonghaekim-my-folder/memory/_procedural/_staged"),
+    _PROJECTS_DIR / "memory" / "_staged",
+    _PROJECTS_DIR / "memory" / "_procedural" / "_staged",
 )
 _HOOK_DIR = Path(__file__).resolve().parent
 if (_HOOK_DIR / "memory_extractor.py").is_file():
     if str(_HOOK_DIR) not in sys.path:
         sys.path.insert(0, str(_HOOK_DIR))
 else:
-    PROD = Path("/Users/yonghaekim/.claude/scripts/mindvault")
+    PROD = Path("~/.claude/scripts/mindvault").expanduser()
     if str(PROD) not in sys.path:
         sys.path.insert(0, str(PROD))
 

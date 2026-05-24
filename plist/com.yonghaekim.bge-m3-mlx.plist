@@ -8,21 +8,21 @@
     <key>ProgramArguments</key>
     <array>
         <string>/Library/Frameworks/Python.framework/Versions/3.10/bin/python3</string>
-        <string>/Users/yonghaekim/my-folder/apps/mindvault-v3/scripts/bge_m3_server.py</string>
+        <string>__USER_HOME__/.claude/scripts/mindvault/bge_m3_server.py</string>
     </array>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
-        <string>/Users/yonghaekim</string>
+        <string>__USER_HOME__</string>
         <key>PATH</key>
         <string>/Library/Frameworks/Python.framework/Versions/3.10/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HF_HOME</key>
-        <string>/Users/yonghaekim/.cache/huggingface</string>
+        <string>__USER_HOME__/.cache/huggingface</string>
     </dict>
 
     <key>WorkingDirectory</key>
-    <string>/Users/yonghaekim</string>
+    <string>__USER_HOME__</string>
 
     <key>RunAtLoad</key>
     <true/>
@@ -39,10 +39,10 @@
     <integer>30</integer>
 
     <key>StandardOutPath</key>
-    <string>/Users/yonghaekim/Library/Logs/bge-m3-mlx.log</string>
+    <string>__USER_HOME__/Library/Logs/bge-m3-mlx.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/yonghaekim/Library/Logs/bge-m3-mlx.err</string>
+    <string>__USER_HOME__/Library/Logs/bge-m3-mlx.err</string>
 
     <key>ProcessType</key>
     <string>Interactive</string>

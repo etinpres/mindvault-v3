@@ -13,13 +13,22 @@ import time
 import traceback
 from pathlib import Path
 
-PROJECTS_ROOT = Path("/Users/yonghaekim/.claude/projects")
-# Sprint 6: 멀티 디렉토리 스캔. 형이 cd 위치에 따라 별도 projects 폴더가
-# 자동 생성되므로 (~ = -Users-yonghaekim, ~/my-folder = -Users-yonghaekim-my-folder,
-# 각 앱 = -Users-yonghaekim-my-folder-apps-*) 모든 하위 디렉토리의 *.jsonl을 흡수.
-# 빈 디렉토리는 자연스럽게 skip.
-# 하위 호환: PROJECTS_DIR 그대로 import하는 코드를 위해 옛 default 유지.
-PROJECTS_DIR = PROJECTS_ROOT / "-Users-yonghaekim-my-folder"
+PROJECTS_ROOT = Path("~/.claude/projects").expanduser()
+# Sprint 6: 멀티 디렉토리 스캔. Claude Code 가 cwd 마다 별도 projects 슬롯을
+# 자동 생성하므로 (예: cwd=`/Users/<user>` → `-Users-<user>`, cwd=`/Users/<user>/foo`
+# → `-Users-<user>-foo`) 모든 하위 디렉토리의 *.jsonl 을 흡수한다. 빈 디렉토리는
+# 자연스럽게 skip. 하위 호환: PROJECTS_DIR 그대로 import 하는 코드를 위해 현재
+# $HOME 기반 default 유지.
+import os as _os_default
+def _default_projects_dir() -> Path:
+    override = _os_default.environ.get("MV3_PROJECTS_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    home_slug = "-" + str(Path.home()).strip("/").replace("/", "-")
+    return PROJECTS_ROOT / home_slug
+
+
+PROJECTS_DIR = _default_projects_dir()
 
 
 def iter_jsonl_paths(root: Path = PROJECTS_ROOT):
@@ -28,7 +37,7 @@ def iter_jsonl_paths(root: Path = PROJECTS_ROOT):
         return
     for p in root.glob("*/*.jsonl"):
         yield p
-DATA_DIR = Path("/Users/yonghaekim/.claude/mindvault-v3")
+DATA_DIR = Path("~/.claude/mindvault-v3").expanduser()
 DB_PATH = DATA_DIR / "index.db"
 DEBUG_LOG = DATA_DIR / "debug.log"
 SIGNATURE = "# 지난 세션 요약 (MindVault v3)"

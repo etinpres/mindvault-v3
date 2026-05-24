@@ -36,7 +36,7 @@ GEMMA_INTENT_TIMEOUT = 2.0
 GEMMA_INTENT_MAX_LEN = 40  # 그 이상 query 는 Gemma 호출 안 함 (cost / latency)
 ENABLE_GEMMA_INTENT_ENV = "MV3_GEMMA_INTENT"
 
-_DEBUG_LOG = Path("/Users/yonghaekim/.claude/mindvault-v3/debug.log")
+_DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
 
 
 def _debug(msg: str) -> None:
