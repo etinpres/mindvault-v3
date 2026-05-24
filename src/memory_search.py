@@ -470,20 +470,45 @@ def recall_memory(
         if qvec is not None:
             vec_rows, raw_cosine_map = _vec_top_k(conn, qvec, limit=10)
 
-        # NEXT-31 (2026-05-24): alias_index 자산은 alias_generator.py 로 ship
-        # 했으나, memory_search 직접 통합은 cohort 측정에서 회귀 (WEAK correct
-        # 5/15 → 3/15) 일으켜 보류. 회귀 원인: Gemma 가 생성한 alias 가
-        # description 표현과 너무 가깝고 ("영상 리포트" → "리포트 정리" 매칭),
-        # 정작 사용자가 쓰는 우회 표현 ("프린터", "기획안") 은 거의 안 생성.
-        # 향후 sprint (NEXT-32) 에서 (a) alias 생성 prompt 정교화, (b) 더
-        # narrow 한 토큰 매칭(예: 두 토큰 동시 일치만), (c) alias_index 별도
-        # FTS5 테이블로 분리해 RRF 정상 흐름으로 합류 — 중 하나 시도.
-        if not vec_rows and not fts_rows:
+        # NEXT-32 (2026-05-24): alias_index lookup 정식 통합. NEXT-31 에서
+        # Gemma 생성 alias 로 시도했다 cohort 회귀 (WEAK 5/15→3/15) 일으켰던
+        # 작업을 Sonnet 4.6 으로 alias 재생성 후 재시도. 새 alias 품질:
+        #   (a) description 단어 재사용 차단
+        #   (b) "브이3"/"v3"/"기획안 웹으로" 같은 진짜 우회 표현 등장
+        # 통합 방식 (회귀 방지):
+        #   - alias 매칭 path 를 candidates 에 fallback 으로만 추가
+        #   - raw_cosine sentinel 0.35 (게이트 통과)
+        #   - score 0.0 으로 시작 — RRF/normalize 후 vec/fts hit 의 더 강한
+        #     score 가 자연스럽게 위. 즉 alias 는 "임베딩 누락 회복" 역할만.
+        # 테스트 격리: prod DB_PATH 일 때만 lookup. tmp_db (테스트 fixture)
+        # 에서는 alias_index 와 path 가 안 맞아 false hit 회귀 가능.
+        if db_path == DB_PATH:
+            alias_paths = _alias_boost_paths(query)
+        else:
+            alias_paths = set()
+
+        if not vec_rows and not fts_rows and not alias_paths:
             _debug(f"no candidates query={query!r}")
             return []
 
         top1_raw = max(raw_cosine_map.values()) if raw_cosine_map else 0.0
         combined = rrf_combine(vec_rows, fts_rows, k=RRF_K)
+
+        # alias fallback 합류 — 신규 path 추가 + 이미 후보인 path 의 raw 도
+        # 게이트 통과 보장. setdefault 만으로는 vec raw 0.30 정도의 약 매칭이
+        # 이미 들어가 있을 때 sentinel 0.35 가 무시되어 게이트 떨굼 (NEXT-32
+        # 측정에서 "기획안 만들어줘" → html-output-default raw 0.298 떨굼 발견).
+        # max(현재, 0.35) 로 upgrade — alias 매칭 = "의미 매칭 강함" 신호.
+        # score 는 손대지 않아 RRF 정상 ranking 유지.
+        for bp in alias_paths:
+            cur = raw_cosine_map.get(bp, 0.0)
+            raw_cosine_map[bp] = max(cur, 0.35)
+            if bp not in combined:
+                combined[bp] = {"score": 0.0, "source": ["alias"]}
+            else:
+                if "alias" not in combined[bp]["source"]:
+                    combined[bp]["source"].append("alias")
+
         normalize_scores(combined)
 
         # raw cosine 게이트: 의미적 무관 path 차단.
