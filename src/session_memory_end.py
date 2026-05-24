@@ -37,7 +37,10 @@ if os.environ.get(RECURSION_GUARD_ENV) == "1":
 
 from memory_extractor import extract_from_jsonl  # type: ignore  # noqa: E402
 
-PROJECTS_DIR = Path("/Users/yonghaekim/.claude/projects/-Users-yonghaekim-my-folder")
+PROJECTS_ROOT = Path("/Users/yonghaekim/.claude/projects")
+# memory 저장 base 는 항상 -Users-yonghaekim-my-folder 슬롯 (단일 원천).
+# 단, jsonl 탐색은 PROJECTS_ROOT 의 모든 하위 슬롯에서 — Sprint 6 indexer 와 동일.
+PROJECTS_DIR = PROJECTS_ROOT / "-Users-yonghaekim-my-folder"
 MEMORY_DIR = PROJECTS_DIR / "memory"
 STAGED_DIR = MEMORY_DIR / "_staged"
 # Sprint 13: procedural type 후보는 _procedural/_staged/ 슬롯에 저장. 결정 메모리와
@@ -180,10 +183,13 @@ def main() -> int:
             _debug("no session id; skip")
             return 0
 
-        jsonl = PROJECTS_DIR / f"{sid}.jsonl"
-        if not jsonl.is_file():
+        matches = sorted(PROJECTS_ROOT.glob(f"*/{sid}.jsonl"))
+        if not matches:
             _debug(f"jsonl missing for {sid[:8]}")
             return 0
+        jsonl = matches[0]
+        if len(matches) > 1:
+            _debug(f"jsonl multi-hit for {sid[:8]}: picked {jsonl.parent.name}")
 
         candidates = extract_from_jsonl(jsonl)
         if not candidates:
