@@ -37,7 +37,7 @@ RRF_K = 60
 DESCRIPTION_WEIGHT = 1.5
 DEFAULT_TOP_K = 1  # 보수적: 절대 우수한 1건만. V1 토큰 낭비 회피.
 DEFAULT_THRESHOLD = 0.50  # NEXT-29 (2026-05-24): 0.65 → 0.50. 주의: 현재 recall_memory 함수 body 에서 미적용 (dead param). 실 적용은 NEXT-30 에서. 사유는 hooks/memory-recall.py SCORE_THRESHOLD 주석 참조.
-DEFAULT_RAW_COSINE_MIN = 0.40  # Sprint 9 Arctic-ko 분포에 맞춰 재튜닝 (도메인 0.44~0.61 vs 잡담 0.23~0.34, gap 0.26)
+DEFAULT_RAW_COSINE_MIN = 0.32  # NEXT-30.1 (2026-05-24): 0.40 → 0.32. 측정 근거는 hooks/memory-recall.py RAW_COSINE_MIN_DEFAULT 주석 참조.
 # Sprint NEXT-4 — procedural type 별 게이트 보너스. 명령어 syntax 메모리는
 # specific keyword 매칭 강도가 일반 결정·프로젝트 메모리보다 엄격해야 정확함.
 # default(0.40) → procedural 0.45, hinted(0.32) → procedural 0.37 로 자동 분리.
@@ -108,10 +108,25 @@ def normalize_scores(combined: dict[str, dict]) -> None:
 
 
 def _fts_escape(query: str) -> str:
+    """FTS5 MATCH 쿼리 생성.
+
+    NEXT-30.2 (2026-05-24): 이전 동작 `"word1" "word2"` 는 FTS5 의 implicit
+    AND 라 모든 토큰이 정확히 일치해야 hit. 한국어 활용형/조사/공백 변형으로
+    "스캔해" vs "스캐너" 같은 변형이 no_candidates 870건의 큰 슬라이스였음.
+    새 동작:
+    - 2자 이상 토큰만 사용 (1자 토큰 — 한국어 "안","함" 등 — 은 noise)
+    - 각 토큰에 prefix wildcard (`word*`) 적용
+    - OR 결합 — 하나라도 잡히면 candidate. RRF + raw_cosine 게이트가 false
+      positive 차단.
+    """
     words = re.findall(r"[^\s\"'`*:()]+", query)
     if not words:
         return '""'
-    return " ".join(f'"{w}"' for w in words)
+    pat = [f"{w}*" for w in words if len(w) >= 2]
+    if not pat:
+        # 모든 토큰이 1자면 fallback — phrase 그대로 (희소 케이스)
+        return " ".join(f'"{w}"' for w in words)
+    return " OR ".join(pat)
 
 
 def _fts_top_k(
@@ -407,8 +422,11 @@ def recall_memory(
         # Sprint 12: fts source도 raw_cosine 검사 적용 (단어 우연 매칭으로 잡담이
         # fts-only hit으로 통과하는 회귀 차단). fts source인 경우 임계를 절반으로
         # 완화 — 정확 keyword 매칭은 raw 약해도 정당하지만 raw 0.20 미만은 잡담 영역.
+        # NEXT-30.2 (2026-05-24): _fts_escape 가 prefix OR 로 candidates 영역을
+        # 크게 넓혀 fts-only 비율 0.5 배가 너무 헐거워졌음 ("음 그래서"→
+        # user-english-teacher raw 0.223, "이거 뭐였지"→scan-natural-language
+        # raw 0.197 통과 회귀). 0.5 → 0.8 로 좁힘.
         # vec 임베딩이 아예 실패(서버 다운)했으면 게이트 면제 — fts-only fallback 허용.
-        # normalize score는 ranking signal로만 사용 (절대 차단 X).
         vec_available = bool(raw_cosine_map)
         kept = []
         for path, info in combined.items():
@@ -418,9 +436,16 @@ def recall_memory(
                 # specific keyword 매칭 강도가 일반 결정 메모리보다 필요한 영역.
                 path_gate = _gate_for_path(path, raw_cosine_min)
                 has_vec = "vec" in info["source"]
-                threshold = path_gate if has_vec else path_gate * 0.5
+                threshold = path_gate if has_vec else path_gate * 0.8
                 if raw < threshold:
                     continue
+            # NEXT-30.3 (2026-05-24): score_threshold 게이트 정식 적용. 이전엔
+            # 함수 파라미터만 받고 미적용 (dead param) 이었음. top_k 자르기 전
+            # combined 단에서 적용 — top-1 만 보더라도 wikilink 1-hop expansion
+            # 의 후속 결과를 차단하는 효과. top-1 자체는 normalize 후 score=1.0
+            # 라 게이트 통과.
+            if score_threshold > 0 and info["score"] < score_threshold:
+                continue
             kept.append((path, info, raw))
         # 정렬: raw cosine 우선 (절대 관련도) → 동률 시 normalize score
         kept.sort(key=lambda x: (x[2], x[1]["score"]), reverse=True)

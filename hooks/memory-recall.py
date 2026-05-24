@@ -54,8 +54,11 @@ HARD_TIMEOUT_MS = 400
 # 0.40→0.35 완화 후 false positive 측정은 NEXT-30 별도 sprint.
 SCORE_THRESHOLD = 0.50
 TOP_K = 1  # 절대 우수한 1건만. 매번 3건 회수는 V1 토큰 낭비 패턴.
-RAW_COSINE_MIN_DEFAULT = 0.40  # Sprint 9 Arctic-ko 재튜닝 (도메인 0.44~0.61 vs 잡담 0.23~0.34)
-RAW_COSINE_MIN_HINTED = 0.32   # Sprint 9 Arctic-ko 분포 비례 완화
+# NEXT-30.1 (2026-05-24): 0.40 → 0.32 / 0.32 → 0.27. 측정: cohort weak
+# correct 20% → 33% (+13pp), FP 0/16 → 1/16 (오직 "ok" len=2 — hook
+# MIN_PROMPT_LEN=4 가 어차피 차단). strong correct 60% 그대로 유지.
+RAW_COSINE_MIN_DEFAULT = 0.32  # Sprint 9 Arctic-ko 재튜닝 + NEXT-30.1 완화
+RAW_COSINE_MIN_HINTED = 0.27   # 회수 단서어 ("예전에" 등) 있을 때 사용자 의도 명확 → 추가 완화
 
 # 회수 의도 명확 키워드 (있으면 임계값 ↓)
 RECALL_HINTS = ("예전에", "그때", "이전에", "지난번", "어제", "전에", "옛날에", "저번에")
