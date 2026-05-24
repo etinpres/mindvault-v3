@@ -113,6 +113,24 @@ class TestShouldSkipRecall(unittest.TestCase):
 
 
 class TestGemmaIntent(unittest.TestCase):
+    def setUp(self):
+        # post-ship: classify_with_gemma 가 file cache 사용 → 테스트 간 격리.
+        # 각 테스트는 임시 DB로 cache 분리.
+        import tempfile
+        from pathlib import Path
+        import query_intent
+        self._tmp = tempfile.TemporaryDirectory()
+        self._orig_db = query_intent._GEMMA_CACHE_DB
+        self._orig_init = query_intent._gemma_cache_initialized
+        query_intent._GEMMA_CACHE_DB = Path(self._tmp.name) / "intent_cache.db"
+        query_intent._gemma_cache_initialized = False
+
+    def tearDown(self):
+        import query_intent
+        query_intent._GEMMA_CACHE_DB = self._orig_db
+        query_intent._gemma_cache_initialized = self._orig_init
+        self._tmp.cleanup()
+
     """Sprint NEXT-3 — Gemma 보강 classifier."""
 
     def test_gemma_intent_env_off_default(self):

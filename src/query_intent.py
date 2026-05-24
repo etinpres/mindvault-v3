@@ -238,23 +238,118 @@ def _normalize_gemma_label(raw: str | None) -> str | None:
     return None
 
 
+_GEMMA_CACHE_DB = Path("~/.claude/mindvault-v3/intent_cache.db").expanduser()
+_GEMMA_CACHE_TTL_SEC = 7 * 24 * 3600  # 7일
+_GEMMA_CACHE_DISABLE_ENV = "MV3_GEMMA_INTENT_CACHE_DISABLE"
+_gemma_cache_initialized = False
+
+
+def _gemma_cache_enabled() -> bool:
+    return os.environ.get(_GEMMA_CACHE_DISABLE_ENV, "0") != "1"
+
+
+def _gemma_cache_init() -> None:
+    """idempotent — sqlite WAL 로 hook 동시 호출 안전."""
+    global _gemma_cache_initialized
+    if _gemma_cache_initialized:
+        return
+    try:
+        _GEMMA_CACHE_DB.parent.mkdir(parents=True, exist_ok=True)
+        conn = __import__("sqlite3").connect(str(_GEMMA_CACHE_DB), timeout=2.0)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS gemma_intent_cache (
+                    prompt_hash TEXT PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        _gemma_cache_initialized = True
+    except Exception as e:
+        _debug(f"gemma cache init fail (graceful): {type(e).__name__} {e}")
+
+
+def _gemma_cache_get(prompt_text: str) -> str | None:
+    """label 또는 None. miss/error 는 None — 무한 fallback."""
+    if not _gemma_cache_enabled():
+        return None
+    _gemma_cache_init()
+    try:
+        h = __import__("hashlib").sha256(prompt_text.encode("utf-8")).hexdigest()
+        conn = __import__("sqlite3").connect(str(_GEMMA_CACHE_DB), timeout=1.0)
+        try:
+            row = conn.execute(
+                "SELECT label, created_at FROM gemma_intent_cache WHERE prompt_hash=?",
+                (h,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return None
+        label, created_at = row
+        if time.time() - float(created_at) > _GEMMA_CACHE_TTL_SEC:
+            return None
+        return label
+    except Exception as e:
+        _debug(f"gemma cache get fail (graceful): {type(e).__name__} {e}")
+        return None
+
+
+def _gemma_cache_put(prompt_text: str, label: str) -> None:
+    if not _gemma_cache_enabled():
+        return
+    _gemma_cache_init()
+    try:
+        h = __import__("hashlib").sha256(prompt_text.encode("utf-8")).hexdigest()
+        conn = __import__("sqlite3").connect(str(_GEMMA_CACHE_DB), timeout=1.0)
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO gemma_intent_cache(prompt_hash,label,created_at) VALUES(?,?,?)",
+                (h, label, time.time()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        _debug(f"gemma cache put fail (graceful): {type(e).__name__} {e}")
+
+
+# label sentinel for "Gemma 호출했으나 유효 라벨 없음" — 다시 호출 안 함.
+_GEMMA_NEGATIVE_SENTINEL = "__none__"
+
+
 def classify_with_gemma(prompt: str) -> IntentResult | None:
     """rule-based 가 unknown 으로 떨어진 짧은 query 를 Gemma 가 보강 분류.
 
     호출 조건은 caller (hook) 가 판단 — 본 함수는 opt-in 체크만 추가로 안 함.
     유효 라벨(`chat`/`meta`/`code`/`recall`/`other`) 만 반환. 그 외엔 None.
     실패(timeout, 서버 다운, parse fail)는 None 반환 — rule-based 결과로 폴백.
+
+    post-ship perf fix (2026-05-24): file-backed cache. 같은 prompt 는 1회만
+    Gemma 호출, 이후 7일간 hit. perf test 100회 호출 시 8 unique × 350ms 첫
+    호출 + 92 × ~1ms cache hit 으로 avg 478ms → ~50ms 회복.
     """
     p = (prompt or "").strip()
     if not p or len(p) > GEMMA_INTENT_MAX_LEN:
         return None
+    # cache 우선
+    cached = _gemma_cache_get(p)
+    if cached == _GEMMA_NEGATIVE_SENTINEL:
+        return None
+    if cached and cached in _VALID_GEMMA_LABELS and cached != "other":
+        return IntentResult(cached, 0.6, [f"gemma:{cached}"])
+    # miss → 실제 호출
     raw = _call_gemma_intent(p)
     label = _normalize_gemma_label(raw)
-    if label is None:
+    if label is None or label == "other":
+        _gemma_cache_put(p, _GEMMA_NEGATIVE_SENTINEL)
         return None
-    if label == "other":
-        # other 는 unknown 과 동의 — 보강 효과 없음. 본 hook 흐름은
-        # rule-based unknown 그대로 사용하는 게 더 안전.
-        return None
+    _gemma_cache_put(p, label)
     _debug(f"gemma label={label} q={p[:40]!r}")
     return IntentResult(label, 0.6, [f"gemma:{label}"])
