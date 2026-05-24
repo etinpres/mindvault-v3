@@ -406,6 +406,21 @@ def extract_from_jsonl(jsonl_path: Path) -> list[dict]:
                 return []
             _debug(f"always-fire bypass for {jsonl_path.name}")
         prompt = build_prompt(msgs)
+        # NEXT-16: prompt SHA256 캐시 hit → Gemma 호출 건너뜀 (deterministic).
+        # jsonl 변하면 prompt 가 달라져 hash 도 자동 invalidate. opt-out env 있음.
+        try:
+            from extractor_cache import cache_get, cache_put
+            cached = cache_get(prompt)
+        except Exception as e:
+            _debug(f"cache_get fail (graceful): {type(e).__name__}: {e}")
+            cached = None
+            cache_put = None  # type: ignore
+        if cached is not None:
+            _debug(
+                f"extract cache hit for {jsonl_path.name}: "
+                f"{len(cached)} candidates"
+            )
+            return cached
         # NEXT-14b: Gemma 멱등성 보강 — 0건이면 retry, union 으로 candidates 모음.
         # 첫 호출 비-empty 면 즉시 반환 (latency 최소화). 0건일 때만 retry.
         attempts = 1 + _retries()
@@ -433,6 +448,12 @@ def extract_from_jsonl(jsonl_path: Path) -> list[dict]:
                 f"extract union merged={len(merged)} from "
                 f"{[len(r) for r in results]}"
             )
+        # NEXT-16: 결과 캐시 저장 — 빈 list 도 저장 (다음 호출 재시도 비용 회피).
+        if cache_put is not None:
+            try:
+                cache_put(prompt, merged)
+            except Exception as e:
+                _debug(f"cache_put fail (graceful): {type(e).__name__}: {e}")
         return merged
     except Exception as e:
         _debug(f"extract FATAL: {e}\n{traceback.format_exc()}")
