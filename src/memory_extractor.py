@@ -10,6 +10,7 @@ import os
 import re
 import time
 import traceback
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -277,7 +278,8 @@ def call_gemma(prompt: str, max_tokens: int = 1500) -> str | None:
             return None
         content = (choices[0].get("message") or {}).get("content") or ""
         return content.strip() or None
-    except Exception as e:
+    except (TimeoutError, urllib.error.URLError, json.JSONDecodeError, OSError, ValueError) as e:
+        # audit-2026-05-24: BaseException/_Timeout 은 의도적으로 전파.
         _debug(f"gemma fail: {type(e).__name__} {e}")
         return None
 

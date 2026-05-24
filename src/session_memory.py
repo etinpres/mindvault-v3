@@ -238,7 +238,9 @@ def call_gemma(prompt: str, max_tokens: int = 2000) -> str | None:
     except FileNotFoundError as e:
         _debug(f"claude binary not found: {e}")
         return None
-    except Exception as e:
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        # KeyboardInterrupt/SystemExit 는 의도적으로 전파 — 사용자 Ctrl-C 가
+        # SessionStart 90s 매달림으로 swallow 되던 회귀(audit-2026-05-24) 차단.
         _debug(f"claude -p exception: {type(e).__name__}: {e}")
         return None
 
