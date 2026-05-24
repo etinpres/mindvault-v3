@@ -44,14 +44,11 @@ DEBUG_LOG = DATA_DIR / "debug.log"
 METRICS_LOG = DATA_DIR / "metrics.jsonl"
 MIN_PROMPT_LEN = 4  # 너무 짧은 키워드는 skip. 잡담은 raw cosine 게이트가 차단.
 HARD_TIMEOUT_MS = 400
-# NEXT-29 (2026-05-24): 0.65 → 0.50 (doc-correctness). 주의: 현재
-# recall_memory(score_threshold=...) 는 함수 body에서 raw_cosine 게이트만
-# 사용하고 score_threshold 인자는 *적용하지 않음* (dead param).
-# debug.log 1,315회 hook-recall 의 picked>0 = 41건(4.1%) 진짜 원인은
-# mem-search "no_candidates" 870건 — vec+fts 양쪽 매칭이 0건. 즉
-# 임베딩/FTS 매칭 자체가 약함이지 RRF score 게이트 때문이 아니다.
-# 값은 추후 실 적용 시 합리적 기본치로 0.50 유지. 실 적용 + raw_cosine
-# 0.40→0.35 완화 후 false positive 측정은 NEXT-30 별도 sprint.
+# NEXT-30.3 (2026-05-24): score_threshold 게이트가 실제로 recall_memory
+# 본체에 적용됨 — memory_search.py:546-551 참조. 이전 dead-param 코멘트는
+# stale 이라 제거. picked=0 의 주 원인은 여전히 vec+fts no_candidates
+# (debug.log 870 건) 임 — RRF 게이트가 아니라 임베딩/FTS sparsity.
+# 0.65 → 0.50 (NEXT-29 doc-correctness) 기준치 그대로 유지.
 SCORE_THRESHOLD = 0.50
 TOP_K = 1  # 절대 우수한 1건만. 매번 3건 회수는 V1 토큰 낭비 패턴.
 # NEXT-30.1 (2026-05-24): 0.40 → 0.32 / 0.32 → 0.27. 측정: cohort weak
@@ -207,8 +204,18 @@ def _spawn_reindex() -> None:
         _debug(f"spawn reindex fail: {e}")
 
 
-class _Timeout(Exception):
-    pass
+class _Timeout(BaseException):
+    """Hook hard-budget sentinel.
+
+    BaseException 상속이라 호출 chain 어디서도 `except Exception` 에
+    swallow 되지 않는다. KeyboardInterrupt/SystemExit 와 동일 패턴.
+    이전엔 Exception 상속이라 `memory_search.recall_memory` 의 broad
+    `except Exception` 가 잡아 "recall FATAL: _Timeout" + traceback 을
+    debug.log 에 51건 누적시켰고, 실제로는 정상 hook budget timeout 인데
+    panic 레벨로 보였다. BaseException 로 바뀐 뒤엔 hook 외 어떤 핸들러도
+    잡지 않으므로 호출 stack 을 깔끔히 unwind → outer hook 의
+    `except _Timeout` 만 silent skip 처리.
+    """
 
 
 def _alarm_handler(_signum, _frame):

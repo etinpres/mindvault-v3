@@ -146,6 +146,50 @@ class TestRecallMemory(unittest.TestCase):
         all_sources = {s for r in results for s in r["source"]}
         self.assertIn("vec", all_sources)
 
+    def test_base_exception_propagates_through_recall(self):
+        """회귀: hook 의 _Timeout(BaseException) 같은 sentinel 이 발생하면
+        recall_memory 의 broad `except Exception` 이 swallow 하지 않고 호출자까지
+        그대로 propagate 되어야 한다 (FATAL 로깅 + 빈 [] 반환 X).
+
+        이전엔 _Timeout(Exception) 이라 swallow → "recall FATAL" 51건 누적.
+        BaseException 으로 바뀐 뒤 stack 을 그대로 unwind 한다.
+        """
+        from memory_search import recall_memory
+
+        class _SimulatedHookTimeout(BaseException):
+            pass
+
+        def _raise_timeout(_text):
+            raise _SimulatedHookTimeout()
+
+        with patch("memory_search.embed_text", side_effect=_raise_timeout):
+            with self.assertRaises(_SimulatedHookTimeout):
+                recall_memory(
+                    "임의 query",
+                    top_k=3,
+                    score_threshold=0.0,
+                    db_path=self.tmp_db,
+                )
+
+    def test_regular_exception_still_swallowed(self):
+        """회귀: 일반 Exception 은 여전히 broad catch → 빈 [] 반환 + FATAL 로깅.
+        (BaseException 분기는 timeout sentinel 전용. 평범한 버그는 hook 을
+        살리기 위해 swallow 가 정상.)
+        """
+        from memory_search import recall_memory
+
+        def _raise_runtime(_text):
+            raise RuntimeError("simulated upstream failure")
+
+        with patch("memory_search.embed_text", side_effect=_raise_runtime):
+            results = recall_memory(
+                "임의 query",
+                top_k=3,
+                score_threshold=0.0,
+                db_path=self.tmp_db,
+            )
+        self.assertEqual(results, [])
+
 
 class TestFTSEscape(unittest.TestCase):
     """post-ship: _fts_escape는 FTS5 special token을 절대 흘려보내면 안 됨.

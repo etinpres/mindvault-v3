@@ -36,7 +36,7 @@ DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
 RRF_K = 60
 DESCRIPTION_WEIGHT = 1.5
 DEFAULT_TOP_K = 1  # 보수적: 절대 우수한 1건만. V1 토큰 낭비 회피.
-DEFAULT_THRESHOLD = 0.50  # NEXT-29 (2026-05-24): 0.65 → 0.50. 주의: 현재 recall_memory 함수 body 에서 미적용 (dead param). 실 적용은 NEXT-30 에서. 사유는 hooks/memory-recall.py SCORE_THRESHOLD 주석 참조.
+DEFAULT_THRESHOLD = 0.50  # NEXT-30.3 (2026-05-24): score_threshold 본체 적용됨 (아래 _normalize_and_filter 게이트 참조). NEXT-29 의 0.65 → 0.50 기준치 유지.
 DEFAULT_RAW_COSINE_MIN = 0.32  # NEXT-30.1 (2026-05-24): 0.40 → 0.32. 측정 근거는 hooks/memory-recall.py RAW_COSINE_MIN_DEFAULT 주석 참조.
 # Sprint NEXT-4 — procedural type 별 게이트 보너스. 명령어 syntax 메모리는
 # specific keyword 매칭 강도가 일반 결정·프로젝트 메모리보다 엄격해야 정확함.
@@ -592,6 +592,11 @@ def recall_memory(
         )
         return results
     except Exception as e:
+        # 의도적으로 `Exception` 만 잡는다 — hook 의 `_Timeout(BaseException)`
+        # 같은 BaseException 계열 sentinel 은 이 핸들러를 통과해 호출자
+        # (hook outer try) 까지 propagate 되어야 한다. 이전엔 BaseException 가
+        # 아닌 Exception 상속이었어서 정상 hook budget timeout 51 건이
+        # "recall FATAL" + traceback 로 debug.log 에 panic 처럼 누적되었다.
         _debug(f"recall FATAL: {type(e).__name__}: {e}\n{traceback.format_exc()}")
         return []
     finally:
