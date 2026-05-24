@@ -44,7 +44,15 @@ DEBUG_LOG = DATA_DIR / "debug.log"
 METRICS_LOG = DATA_DIR / "metrics.jsonl"
 MIN_PROMPT_LEN = 4  # 너무 짧은 키워드는 skip. 잡담은 raw cosine 게이트가 차단.
 HARD_TIMEOUT_MS = 400
-SCORE_THRESHOLD = 0.65
+# NEXT-29 (2026-05-24): 0.65 → 0.50 (doc-correctness). 주의: 현재
+# recall_memory(score_threshold=...) 는 함수 body에서 raw_cosine 게이트만
+# 사용하고 score_threshold 인자는 *적용하지 않음* (dead param).
+# debug.log 1,315회 hook-recall 의 picked>0 = 41건(4.1%) 진짜 원인은
+# mem-search "no_candidates" 870건 — vec+fts 양쪽 매칭이 0건. 즉
+# 임베딩/FTS 매칭 자체가 약함이지 RRF score 게이트 때문이 아니다.
+# 값은 추후 실 적용 시 합리적 기본치로 0.50 유지. 실 적용 + raw_cosine
+# 0.40→0.35 완화 후 false positive 측정은 NEXT-30 별도 sprint.
+SCORE_THRESHOLD = 0.50
 TOP_K = 1  # 절대 우수한 1건만. 매번 3건 회수는 V1 토큰 낭비 패턴.
 RAW_COSINE_MIN_DEFAULT = 0.40  # Sprint 9 Arctic-ko 재튜닝 (도메인 0.44~0.61 vs 잡담 0.23~0.34)
 RAW_COSINE_MIN_HINTED = 0.32   # Sprint 9 Arctic-ko 분포 비례 완화
@@ -143,9 +151,36 @@ def _mtime_changed() -> bool:
     return False
 
 
+# NEXT-27 (2026-05-24): _spawn_reindex throttle.
+# 이전: _mtime_changed 가 True 인 동안 매 hook 호출마다 reindex child 를
+# subprocess.Popen 으로 fork 했음. 메모리 .md 가 자주 갱신되는 상황에서
+# concurrent reindex 100건이 동시에 떠 e2e perf 회귀(avg 452ms) 가중.
+# 매 spawn 전에 lock 파일의 mtime 을 보고 SPAWN_THROTTLE_SEC 이내면 skip —
+# child 가 이미 도는 중이면 굳이 새로 띄울 필요 없음.
+SPAWN_THROTTLE_SEC = 30
+SPAWN_LOCK = DATA_DIR / "reindex-spawn.lock"
+
+
 def _spawn_reindex() -> None:
-    """incremental_index를 백그라운드로 분리 spawn. 결과 안 기다림."""
+    """incremental_index를 백그라운드로 분리 spawn. 결과 안 기다림.
+
+    NEXT-27 throttle: SPAWN_LOCK 의 mtime 이 SPAWN_THROTTLE_SEC 이내면 skip.
+    """
     try:
+        try:
+            if SPAWN_LOCK.exists():
+                age = time.time() - SPAWN_LOCK.stat().st_mtime
+                if age < SPAWN_THROTTLE_SEC:
+                    return  # 이미 최근에 띄움
+        except OSError:
+            pass  # lock 읽기 실패 시 그냥 진행
+        # touch lock 먼저 — concurrent hook 호출 race 차단
+        try:
+            SPAWN_LOCK.parent.mkdir(parents=True, exist_ok=True)
+            SPAWN_LOCK.touch()
+        except OSError:
+            pass
+
         scripts_path = ":".join(str(d) for d in SCRIPTS_DIRS if d.is_dir())
         code = (
             "import sys, os;"

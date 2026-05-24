@@ -36,7 +36,7 @@ DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
 RRF_K = 60
 DESCRIPTION_WEIGHT = 1.5
 DEFAULT_TOP_K = 1  # 보수적: 절대 우수한 1건만. V1 토큰 낭비 회피.
-DEFAULT_THRESHOLD = 0.65  # normalize 후 점수 게이트 (보조)
+DEFAULT_THRESHOLD = 0.50  # NEXT-29 (2026-05-24): 0.65 → 0.50. 주의: 현재 recall_memory 함수 body 에서 미적용 (dead param). 실 적용은 NEXT-30 에서. 사유는 hooks/memory-recall.py SCORE_THRESHOLD 주석 참조.
 DEFAULT_RAW_COSINE_MIN = 0.40  # Sprint 9 Arctic-ko 분포에 맞춰 재튜닝 (도메인 0.44~0.61 vs 잡담 0.23~0.34, gap 0.26)
 # Sprint NEXT-4 — procedural type 별 게이트 보너스. 명령어 syntax 메모리는
 # specific keyword 매칭 강도가 일반 결정·프로젝트 메모리보다 엄격해야 정확함.

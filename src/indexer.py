@@ -414,12 +414,31 @@ def backfill_session_vecs(db_path: Path = DB_PATH) -> dict[str, int]:
             jsonl_path = Path(r["file_path"])
             if not jsonl_path.is_file():
                 counts["failed"] += 1
+                # NEXT-28: 파일 자체가 없는 세션도 sentinel 처리 — 다음 backfill
+                # 에서 같은 sid 재시도 차단. 파일이 나중에 복구되면 ON CONFLICT
+                # 분기에서 새 vec로 갱신됨.
+                conn.execute(
+                    "INSERT OR IGNORE INTO sessions_vec(session_id, embedding, indexed_at) VALUES(?,?,?)",
+                    (sid, b"", now),
+                )
+                conn.commit()
                 continue
             # Sprint 10: 임베딩(sub-conn embed_cache write 포함)을 메인 INSERT 전에 수행.
             # 매 iter 끝에 commit → 다음 iter 시작 시 메인 idle → cache_put BUSY 회피.
             blob = _embed_session_from_path(jsonl_path)
             if blob is None:
                 counts["failed"] += 1
+                # NEXT-28 (2026-05-24): 본문 추출 결과가 비어있는 jsonl 세션
+                # (예: last-prompt + local-command-stdout 같은 메타-only 파일)은
+                # 매번 backfill 큐에 다시 잡혀 같은 7건이 무한 재시도되었음.
+                # 빈 blob sentinel을 sessions_vec에 박아 LEFT JOIN IS NULL 쿼리
+                # 에서 제외. 검색 측은 frombuffer shape != EMBED_DIM 분기에서
+                # 자동 skip.
+                conn.execute(
+                    "INSERT OR IGNORE INTO sessions_vec(session_id, embedding, indexed_at) VALUES(?,?,?)",
+                    (sid, b"", now),
+                )
+                conn.commit()
                 continue
             conn.execute(
                 """
