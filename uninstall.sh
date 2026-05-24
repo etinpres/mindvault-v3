@@ -1,23 +1,39 @@
 #!/usr/bin/env bash
-# MindVault v3 uninstaller — removes SessionStart hook and the script.
+# MindVault v3 uninstaller — removes hooks, scripts, launchd services, and skill registrations.
 
 set -euo pipefail
 
 HOOKS_DIR="$HOME/.claude/hooks"
-TARGET="$HOOKS_DIR/session-memory.py"
-END_TARGET="$HOOKS_DIR/session-memory-end.py"
-MEMORY_HOOK_TARGET="$HOOKS_DIR/memory-recall.py"
 SETTINGS="$HOME/.claude/settings.json"
-HOOK_CMD="$TARGET"
 
+# Hook scripts targeted for removal. Matched as substring anywhere in the
+# settings.json hook command (covers Stop / SessionEnd async variants too).
+HOOK_TARGETS=(
+  "$HOOKS_DIR/session-memory.py"
+  "$HOOKS_DIR/session-memory-end.py"
+  "$HOOKS_DIR/session-memory-end-async.sh"
+  "$HOOKS_DIR/session-memory-precompute.sh"
+  "$HOOKS_DIR/memory-recall.py"
+)
+
+# Launchd labels MindVault v3 owns. gemma-mlx is intentionally NOT in this list —
+# it is shared infrastructure used outside mindvault.
+LAUNCHD_LABELS=(
+  "com.yonghaekim.arctic-ko-mlx"
+  "com.yonghaekim.mv3-env"
+  "com.yonghaekim.mv3-gemma-intent"
+  "com.yonghaekim.mv3-stats-daily"
+)
+
+# --- 1. settings.json hook entries ----------------------------------------
 if [ -f "$SETTINGS" ]; then
   cp "$SETTINGS" "$SETTINGS.bak"
-  python3 - "$SETTINGS" "$TARGET" "$END_TARGET" "$MEMORY_HOOK_TARGET" <<'PY'
+  python3 - "$SETTINGS" "${HOOK_TARGETS[@]}" <<'PY'
 import json, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
-targets = [sys.argv[2], sys.argv[3], sys.argv[4]]
+targets = sys.argv[2:]
 data = json.loads(path.read_text()) if path.stat().st_size else {}
 hooks = data.get("hooks", {})
 
@@ -27,7 +43,7 @@ def matches(cmd: str) -> bool:
 
 
 removed = 0
-for event_name in ("SessionStart", "SessionEnd", "UserPromptSubmit"):
+for event_name in ("SessionStart", "SessionEnd", "UserPromptSubmit", "Stop"):
     events = hooks.get(event_name, [])
     new_events = []
     for entry in events:
@@ -46,52 +62,45 @@ print(f"✓ removed {removed} hook entries from settings.json")
 PY
 fi
 
-if [ -f "$TARGET" ]; then
-  rm -f "$TARGET"
-  echo "✓ removed $TARGET"
-fi
+# --- 2. Hook scripts ------------------------------------------------------
+for target in "${HOOK_TARGETS[@]}"; do
+  if [ -f "$target" ]; then
+    rm -f "$target"
+    echo "✓ removed $target"
+  fi
+done
 
-if [ -f "$END_TARGET" ]; then
-  rm -f "$END_TARGET"
-  echo "✓ removed $END_TARGET"
-fi
-
-# Sprint 3: /memory_review 스킬 제거
+# --- 3. Slash command skills ----------------------------------------------
 MEMORY_REVIEW_SKILL="$HOME/.claude/commands/memory_review.md"
 if [ -f "$MEMORY_REVIEW_SKILL" ]; then
   rm -f "$MEMORY_REVIEW_SKILL"
   echo "✓ removed $MEMORY_REVIEW_SKILL"
 fi
 
-# Sprint 2: scripts/mindvault/ 제거
-SCRIPTS_DIR="$HOME/.claude/scripts/mindvault"
-if [ -d "$SCRIPTS_DIR" ]; then
-  rm -rf "$SCRIPTS_DIR"
-  echo "✓ removed $SCRIPTS_DIR"
-fi
-
-# Sprint 2: /recall 스킬 제거
 RECALL_SKILL="$HOME/.claude/commands/recall.md"
 if [ -f "$RECALL_SKILL" ]; then
   rm -f "$RECALL_SKILL"
   echo "✓ removed $RECALL_SKILL"
 fi
 
-# Sprint 4: memory-recall hook 제거
-if [ -f "$MEMORY_HOOK_TARGET" ]; then
-  rm -f "$MEMORY_HOOK_TARGET"
-  echo "✓ removed $MEMORY_HOOK_TARGET"
+# --- 4. Deployed scripts directory ----------------------------------------
+SCRIPTS_DIR="$HOME/.claude/scripts/mindvault"
+if [ -d "$SCRIPTS_DIR" ]; then
+  rm -rf "$SCRIPTS_DIR"
+  echo "✓ removed $SCRIPTS_DIR"
 fi
 
-# Sprint 4: BGE-M3 launchd 서비스 제거
-BGE_PLIST_TARGET="$HOME/Library/LaunchAgents/com.yonghaekim.bge-m3-mlx.plist"
-if [ -f "$BGE_PLIST_TARGET" ]; then
-  launchctl unload "$BGE_PLIST_TARGET" 2>/dev/null || true
-  rm -f "$BGE_PLIST_TARGET"
-  echo "✓ removed BGE-M3 launchd service"
-fi
+# --- 5. Launchd services --------------------------------------------------
+for label in "${LAUNCHD_LABELS[@]}"; do
+  PLIST="$HOME/Library/LaunchAgents/${label}.plist"
+  if [ -f "$PLIST" ]; then
+    launchctl unload "$PLIST" 2>/dev/null || true
+    rm -f "$PLIST"
+    echo "✓ removed launchd $label"
+  fi
+done
 
-# Sprint 4: memories_* 테이블 옵션 제거 (--purge-vec 플래그)
+# --- 6. Optional: drop memories_* tables (--purge-vec) --------------------
 if [ "${1:-}" = "--purge-vec" ]; then
   if [ -f "$HOME/.claude/mindvault-v3/index.db" ]; then
     sqlite3 "$HOME/.claude/mindvault-v3/index.db" \
@@ -103,4 +112,5 @@ fi
 echo ""
 echo "Uninstall complete."
 echo "Cache + index preserved at $HOME/.claude/mindvault-v3/. Delete manually if desired."
-echo "BGE-M3 model preserved at $HOME/.cache/mlx-bge-m3/ (~322MB). Delete manually if desired."
+echo "Arctic-ko model preserved at $HOME/.cache/mlx-arctic-ko/ (~322MB). Delete manually if desired."
+echo "gemma-mlx launchd service preserved (shared infrastructure, not mindvault-owned)."
