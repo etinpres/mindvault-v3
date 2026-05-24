@@ -100,27 +100,32 @@ fi
 cp "$SETTINGS" "$SETTINGS.bak"
 echo "✓ backup at $SETTINGS.bak"
 
-python3 - "$SETTINGS" "$HOOK_CMD" "$TARGET" "$END_CMD" "$END_TARGET" <<'PY'
+python3 - "$SETTINGS" "$HOOK_CMD" "$TARGET" "$END_WRAPPER_TARGET" <<'PY'
 import json, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 start_cmd = sys.argv[2]
 start_target = sys.argv[3]
-end_cmd = sys.argv[4]
-end_target = sys.argv[5]
+end_wrapper_cmd = sys.argv[4]
 data = json.loads(path.read_text()) if path.stat().st_size else {}
 hooks = data.setdefault("hooks", {})
 
 
-def register(event_name, cmd, target):
+def register(event_name, cmd, match_targets):
+    """match_targets 의 어떤 substring 라도 매칭되는 기존 hook 모두 cleanup 후 cmd 단일 등록.
+
+    NEXT-25: 옛 SessionEnd 가 wrapper(.sh) + 직접 py 두 hook 동시 등록 →
+    매 fire 마다 always-fire bypass 두 번 + cache race. 둘 다 cleanup 후 wrapper 단일.
+    """
     events = hooks.setdefault(event_name, [])
     cleaned = 0
     kept_events = []
     for entry in events:
         kept = []
         for h in entry.get("hooks", []):
-            if target in (h.get("command") or ""):
+            command = h.get("command") or ""
+            if any(t in command for t in match_targets):
                 cleaned += 1
                 continue
             kept.append(h)
@@ -137,8 +142,10 @@ def register(event_name, cmd, target):
     print(f"✓ registered {event_name} hook")
 
 
-register("SessionStart", start_cmd, start_target)
-register("SessionEnd", end_cmd, end_target)
+register("SessionStart", start_cmd, [start_target])
+# NEXT-25: SessionEnd 는 wrapper 만 단일 등록 — 옛 직접 py path 도 같이 cleanup.
+register("SessionEnd", end_wrapper_cmd,
+         ["session-memory-end.py", "session-memory-end-async.sh"])
 path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 PY
 
