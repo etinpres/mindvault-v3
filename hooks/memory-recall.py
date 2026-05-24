@@ -300,6 +300,12 @@ def main() -> int:
                     f"skip recall intent={intent_label} match={intent_match!r}"
                 )
                 return 0
+        except _Timeout:
+            # post-ship: SIGALRM 의 _Timeout 은 outer 핸들러로 전파 — hook 의
+            # HARD_TIMEOUT_MS budget 보장. 이전 broad `except Exception` 가
+            # _Timeout 까지 swallow 해 첫 cold Gemma 호출 시 641ms 까지 늘었던
+            # 회귀(20:17 debug.log) 차단.
+            raise
         except Exception as e:
             _debug(f"intent classify skipped: {type(e).__name__}: {e}")
 
