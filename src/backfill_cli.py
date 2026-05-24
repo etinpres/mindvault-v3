@@ -113,6 +113,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="MV2_AUTO_COMPILE 강제 0 (compile fire 없이 staged 만)",
     )
+    ap.add_argument(
+        "--deep",
+        action="store_true",
+        help=(
+            "NEXT-14 recall boost 풀세트: ALWAYS_FIRE=1 (trigger 우회) + "
+            "TAIL_TURNS=120 + GEMMA_RETRIES=3. 매 sid 당 latency 30~90s. "
+            "batch 누적 정리용 권장 (실시간 hook 부담은 default 보존)."
+        ),
+    )
     args = ap.parse_args(argv)
 
     events = scan_missing(args.last_hours)
@@ -155,6 +164,11 @@ def main(argv: list[str] | None = None) -> int:
 
     env = os.environ.copy()
     env["MV2_AUTO_COMPILE"] = "0" if args.no_auto_compile else "1"
+    if args.deep:
+        env["MV2_EXTRACTOR_ALWAYS_FIRE"] = "1"
+        env["MV2_EXTRACTOR_TAIL_TURNS"] = "120"
+        env["MV2_EXTRACTOR_GEMMA_RETRIES"] = "3"
+        print("--deep ON: ALWAYS_FIRE=1, TAIL_TURNS=120, GEMMA_RETRIES=3")
 
     stats = {"fire": 0, "ok": 0, "fail": []}
     for i, (prefix, sid, slot, ts) in enumerate(resolved, 1):
