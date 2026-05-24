@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MindVault v2 Sprint 2 → Sprint 5 — sessions hybrid 검색.
+"""MindVault v3 Sprint 2 → Sprint 5 — sessions hybrid 검색.
 
 Sprint 5 변경:
 - FTS5 단독 → FTS5 + BGE-M3 vec hybrid (RRF 결합).

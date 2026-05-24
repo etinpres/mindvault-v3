@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MindVault v2 Sprint 2 — FTS5 증분 인덱서.
+"""MindVault v3 Sprint 2 — FTS5 증분 인덱서.
 
 JSONL 세션 로그를 SQLite FTS5에 인덱싱한다. mtime + size 변경된 파일만 upsert.
 """
@@ -31,7 +31,7 @@ def iter_jsonl_paths(root: Path = PROJECTS_ROOT):
 DATA_DIR = Path("/Users/yonghaekim/.claude/mindvault-v3")
 DB_PATH = DATA_DIR / "index.db"
 DEBUG_LOG = DATA_DIR / "debug.log"
-SIGNATURE = "# 지난 세션 요약 (MindVault v2)"
+SIGNATURE = "# 지난 세션 요약 (MindVault v3)"
 SCHEMA_VERSION = 3
 # Sprint 6: 임베딩은 첫 N turn(user/assistant) 기준. 세션 의도는 앞쪽에 몰리고
 # 잡담 세션은 첫 N turn도 짧고 약하므로 신호/노이즈가 자연스럽게 분리된다.

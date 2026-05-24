@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# MindVault v2 uninstaller — removes SessionStart hook and the script.
+# MindVault v3 uninstaller — removes SessionStart hook and the script.
 
 set -euo pipefail
 

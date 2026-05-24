@@ -1,8 +1,8 @@
-# MindVault v2 Sprint 4 — Layer 4 Memory Recall Implementation Plan
+# MindVault v3 Sprint 4 — Layer 4 Memory Recall Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** memory/*.md를 BGE-M3 임베딩 + FTS5 hybrid로 자동 회수하는 Layer 4를 기존 MindVault v2 (Sprint 1~3 배포 완료) 위에 추가한다. UserPromptSubmit hook으로 매 메시지마다 silent하게 발동.
+**Goal:** memory/*.md를 BGE-M3 임베딩 + FTS5 hybrid로 자동 회수하는 Layer 4를 기존 MindVault v3 (Sprint 1~3 배포 완료) 위에 추가한다. UserPromptSubmit hook으로 매 메시지마다 silent하게 발동.
 
 **Architecture:** BGE-M3 MLX를 launchd로 상주(8081), `memory_indexer.py`가 `memory/*.md`를 본문+description 이중 임베딩 → sqlite-vec + FTS5. `memory_search.py`가 RRF로 결합하고, `memory-recall.py` hook이 매 사용자 메시지에 top-3을 system-reminder로 주입. 모든 실패는 silent (exit 0).
 
@@ -580,7 +580,7 @@ Expected: ImportError.
 `src/memory_indexer.py` (신규):
 ```python
 #!/usr/bin/env python3
-"""MindVault v2 Sprint 4 — memory/*.md → sqlite-vec + FTS5 이중 인덱서."""
+"""MindVault v3 Sprint 4 — memory/*.md → sqlite-vec + FTS5 이중 인덱서."""
 from __future__ import annotations
 
 import json
@@ -1122,7 +1122,7 @@ Expected: ImportError.
 `src/memory_search.py` (신규):
 ```python
 #!/usr/bin/env python3
-"""MindVault v2 Sprint 4 — hybrid RRF memory 검색."""
+"""MindVault v3 Sprint 4 — hybrid RRF memory 검색."""
 from __future__ import annotations
 
 import json
@@ -1531,7 +1531,7 @@ Expected: HOOK 파일 없음 또는 FAIL.
 `hooks/memory-recall.py`:
 ```python
 #!/usr/bin/env python3
-"""MindVault v2 Sprint 4 — UserPromptSubmit hook.
+"""MindVault v3 Sprint 4 — UserPromptSubmit hook.
 매 사용자 메시지마다 memory/*.md hybrid 검색 결과를 system-reminder로 주입.
 모든 실패는 silent → exit 0 빈 출력.
 """
@@ -1830,7 +1830,7 @@ Expected: 2 FAIL.
 `src/recall_cli.py` 전체 교체:
 ```python
 #!/usr/bin/env python3
-"""MindVault v2 — recall CLI. JSONL 세션(FTS5+Gemma) + memory/(hybrid RRF) 검색."""
+"""MindVault v3 — recall CLI. JSONL 세션(FTS5+Gemma) + memory/(hybrid RRF) 검색."""
 from __future__ import annotations
 
 import argparse
@@ -2540,7 +2540,7 @@ Expected: memory 섹션 + sessions 섹션 둘 다 결과.
 
 `README.md`의 "## 동작 방식" 다이어그램과 "현황 요약" 표에 Layer 4 추가:
 ```markdown
-## MindVault v2 현황 요약
+## MindVault v3 현황 요약
 
 | Layer | 상태 | 기능 |
 |---|---|---|

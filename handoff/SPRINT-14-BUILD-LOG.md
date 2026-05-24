@@ -3,7 +3,7 @@ name: handoff-sprint14-build-log
 description: Sprint 14 build log — Memory Compiler (LLM-as-compiler 패턴). SessionEnd 후보가 기존 memory 와 매칭되면 Gemma 로 정제·통합해 update_of 메타 부착, /memory_review diff + approve update flow 지원. opt-in MV3_AUTO_COMPILE=1
 ---
 
-MindVault v2 → v3 Sprint 14 — Memory Compiler 빌드 로그
+MindVault v3 → v3 Sprint 14 — Memory Compiler 빌드 로그
 
 ## 요약
 

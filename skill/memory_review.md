@@ -1,5 +1,5 @@
 ---
-description: Gemma가 추출한 영구 기억 후보를 검토하고 승인·폐기 (MindVault v2 Sprint 3)
+description: Gemma가 추출한 영구 기억 후보를 검토하고 승인·폐기 (MindVault v3 Sprint 3)
 argument-hint: (없음)
 allowed-tools: Bash
 ---

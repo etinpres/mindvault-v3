@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MindVault v2 Sprint 3 — /memory review CLI.
+"""MindVault v3 Sprint 3 — /memory review CLI.
 
 하위 명령:
   list                          → staged 후보 JSON 출력 (update 후보면 update_of 표시)

@@ -3,7 +3,7 @@ name: handoff-sprint13-build-log
 description: Sprint 13 build log — procedural memory slot (memory/_procedural/) 신설, frontmatter type=procedural 신규 valid, memory_extractor trigger 패턴 확장(명령어 syntax workflow 환경설정), session_memory_end 라우팅, memory_review_cli 양쪽 슬롯 스캔, indexer hook _procedural 하위 인식
 ---
 
-MindVault v2 → v3 Sprint 13 — Procedural Memory Slot 빌드 로그
+MindVault v3 → v3 Sprint 13 — Procedural Memory Slot 빌드 로그
 
 ## 요약
 

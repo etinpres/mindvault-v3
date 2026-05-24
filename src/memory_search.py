@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MindVault v2 Sprint 4 — hybrid RRF memory 검색.
+"""MindVault v3 Sprint 4 — hybrid RRF memory 검색.
 
 알고리즘:
 1. 쿼리 임베딩 (BGE-M3)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MindVault v2 — /recall CLI 진입점.
+"""MindVault v3 — /recall CLI 진입점.
 
 JSONL 세션(FTS5 + Gemma 재순위/요약, Sprint 2) 또는 memory/*.md(hybrid RRF, Sprint 4)
 또는 둘 다 검색.
@@ -35,7 +35,7 @@ def _search_memory(query: str, top_k: int = 5) -> list[dict]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="MindVault v2 recall CLI")
+    parser = argparse.ArgumentParser(description="MindVault v3 recall CLI")
     parser.add_argument("query", help="검색 쿼리 (공백 포함 시 따옴표로 감싸기)")
     parser.add_argument(
         "--source",

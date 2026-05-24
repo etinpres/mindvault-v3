@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MindVault v2 Sprint 4 — UserPromptSubmit hook.
+"""MindVault v3 Sprint 4 — UserPromptSubmit hook.
 
 매 사용자 메시지마다 memory/*.md hybrid 검색 결과를 system-reminder로 주입.
 모든 실패는 silent → exit 0 빈 출력. 사용자 메시지 처리 절대 블로킹 X.

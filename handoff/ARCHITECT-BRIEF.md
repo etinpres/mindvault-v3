@@ -3,7 +3,7 @@ name: handoff-architect-brief-sprint3
 description: Sprint 3 (Layer 3) architect brief — SessionEnd 훅으로 Gemma가 기억 후보를 staged 폴더에 저장하고 /memory review 슬래시 명령으로 사용자 승인 받은 항목만 영구 MEMORY.md에 등록하는 승인 게이트 설계
 ---
 
-# Architect Brief — MindVault v2 (Sprint 3 of 3 = Layer 3)
+# Architect Brief — MindVault v3 (Sprint 3 of 3 = Layer 3)
 
 *Written by Architect. Read by Builder and Reviewer.*
 

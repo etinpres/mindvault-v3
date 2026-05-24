@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MindVault v2 Sprint 3 — Gemma 기반 기억 후보 추출기.
+"""MindVault v3 Sprint 3 — Gemma 기반 기억 후보 추출기.
 
 트리거 키워드 감지 → Gemma에 구조화 프롬프트 → JSON 배열 파싱 → 유효 항목 반환.
 """

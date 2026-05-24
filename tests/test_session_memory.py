@@ -1,4 +1,4 @@
-"""Unit tests for MindVault v2 session_memory hook."""
+"""Unit tests for MindVault v3 session_memory hook."""
 from __future__ import annotations
 
 import json

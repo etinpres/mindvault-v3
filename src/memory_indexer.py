@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MindVault v2 Sprint 4 — memory/*.md → BLOB-기반 vec + FTS5 이중 인덱서.
+"""MindVault v3 Sprint 4 — memory/*.md → BLOB-기반 vec + FTS5 이중 인덱서.
 
 설계 결정:
 - vec 저장은 sqlite-vec 대신 일반 BLOB 컬럼 + numpy float32 (macOS 시스템

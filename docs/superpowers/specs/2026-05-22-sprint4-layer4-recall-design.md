@@ -1,4 +1,4 @@
-# MindVault v2 Sprint 4 — Layer 4 Memory Recall (Hybrid)
+# MindVault v3 Sprint 4 — Layer 4 Memory Recall (Hybrid)
 
 - **Date**: 2026-05-22
 - **Author**: brainstorming session, yonghaekim + Claude (Opus 4.7)
@@ -49,7 +49,7 @@
 
 ```
 ┌───────────────────────────────────────────────────────────┐
-│                  MindVault v2 (existing)                  │
+│                  MindVault v3 (existing)                  │
 │                                                            │
 │  Layer 1: SessionStart  ─→  최근 5세션 Gemma 요약 주입    │
 │  Layer 2: /recall       ─→  JSONL FTS5 + Gemma 재순위/요약 │
@@ -374,7 +374,7 @@ CREATE INDEX idx_memories_vec_path ON memories_vec(path);
 
 ### 6.1 철학
 
-MindVault v2 1~3 Layer의 **"절대 세션을 블로킹하지 않는다"** 정신을 그대로 계승. 모든 실패는 silent → `exit 0` 빈 출력.
+MindVault v3 1~3 Layer의 **"절대 세션을 블로킹하지 않는다"** 정신을 그대로 계승. 모든 실패는 silent → `exit 0` 빈 출력.
 
 ### 6.2 실패 시나리오 매트릭스
 

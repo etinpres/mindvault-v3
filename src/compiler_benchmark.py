@@ -56,7 +56,7 @@ SCENARIOS = [
     (
         "long",
         (
-            "MindVault v2 → v3 진행 노트.\n\n"
+            "MindVault v3 → v3 진행 노트.\n\n"
             "Sprint 13: procedural memory slot 신설 — memory/_procedural/ 디렉토리, "
             "frontmatter type=procedural 새 valid type.\n"
             "Sprint 14: Memory Compiler — LLM-as-compiler 패턴, Gemma 정제, opt-in.\n"

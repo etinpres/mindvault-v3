@@ -3,7 +3,7 @@ name: handoff-sprint15-build-log
 description: Sprint 15 build log — Self-evaluation Loop 측정 인프라. metrics.jsonl + Claude session JSONL 로 hit rate, internal effort, false positive rate, self-affirming memory 4가지 metric batch 계산. 자동 게이트 조정 미구현(위험성)
 ---
 
-MindVault v2 → v3 Sprint 15 — Self-evaluation Loop 빌드 로그
+MindVault v3 → v3 Sprint 15 — Self-evaluation Loop 빌드 로그
 
 ## 요약
 
@@ -111,7 +111,7 @@ Sprint 16 query intent classifier 가 잡담을 분모에서 제외하면 실질
 
 ### V3-PLAN §1.4 echo chamber 직접 탐지 (자기충족 메모리)
 
-V3-PLAN §1.4 가 "MindVault v2 운영 중 (품질 양호)" 메모리가 형 실제 경험과 모순돼도 자동
+V3-PLAN §1.4 가 "MindVault v3 운영 중 (품질 양호)" 메모리가 형 실제 경험과 모순돼도 자동
 교정 안 됨 위험 지적. Sprint 15 첫 실측에서 그 메모리 자체가 self-affirming top-1 으로
 탐지됨 — "완성" + "운영 중" + "품질 양호" 5 hits. 형이 수동 검토 후 정정/삭제 대상.
 나머지 후보들 (/assemble V4 Spike 시리즈) 도 ship-ready 단정형 본문 → 재검토 대상.

@@ -1,5 +1,5 @@
 ---
-description: 과거 Claude Code 세션(FTS5+Gemma 재순위) + memory/*.md(hybrid RRF)를 자연어로 검색해 관련 결과를 현재 대화에 주입 (MindVault v2 Layer 2+4)
+description: 과거 Claude Code 세션(FTS5+Gemma 재순위) + memory/*.md(hybrid RRF)를 자연어로 검색해 관련 결과를 현재 대화에 주입 (MindVault v3 Layer 2+4)
 argument-hint: <검색어>
 allowed-tools: Bash
 ---

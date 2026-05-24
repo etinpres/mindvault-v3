@@ -41,7 +41,7 @@ NEGATIVE_CUE_RE = re.compile(
 )
 
 # self-affirming 키워드 — 본문에 2회 이상 등장하면 자기충족 flag.
-# "MindVault v2 운영 중 (품질 양호)" 같은 echo chamber 식 메모리 잡기.
+# "MindVault v3 운영 중 (품질 양호)" 같은 echo chamber 식 메모리 잡기.
 SELF_AFFIRMING_RE = re.compile(
     r"(잘\s?작동|안정적|완성|문제\s?없|정상\s?작동|성공적으로|"
     r"ship[-\s]?ready|production[-\s]?ready|품질\s?양호|운영\s?중)"

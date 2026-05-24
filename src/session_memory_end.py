@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MindVault v2 Sprint 3 — SessionEnd 훅.
+"""MindVault v3 Sprint 3 — SessionEnd 훅.
 
 세션 종료 시 마지막 턴에 '영구 기억' 트리거가 있으면 Gemma로 후보 추출 →
 memory/_staged/*.md 로 저장. 실제 memory/ 파일은 절대 건드리지 않는다.

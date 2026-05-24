@@ -3,7 +3,7 @@ name: handoff-sprint10-brief
 description: Sprint 10 brief — incremental_index long-running write transaction을 매-파일 commit 단위로 쪼개 hook(memory-recall, session-memory-precompute, session-memory-end) 동시 실행 시 sqlite lock 충돌 해소. Sprint 9 BGE-M3 → Arctic-Embed-L v2.0 KO dragonkue snowflake 4bit 교체 직후 잔여 작업
 ---
 
-MindVault v2 Sprint 10 — indexer 트랜잭션 리팩터 + 잔여 정리
+MindVault v3 Sprint 10 — indexer 트랜잭션 리팩터 + 잔여 정리
 
 ## 컨텍스트 (Sprint 9에서 넘어옴)
 

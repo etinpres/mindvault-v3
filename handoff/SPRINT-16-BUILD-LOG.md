@@ -3,7 +3,7 @@ name: handoff-sprint16-build-log
 description: Sprint 16 build log — Query Intent Classifier (rule-based, chat/meta/code/recall/unknown) hook 통합으로 mid-cosine zone 잡담·메타 차단, Multi-source 영구 등록 CLI (sources.json) + indexer/hook union 통합. V3-PLAN §1.2 false positive 한계 본질적 해소
 ---
 
-MindVault v2 → v3 Sprint 16 — Query Intent Classifier + Multi-source 빌드 로그
+MindVault v3 → v3 Sprint 16 — Query Intent Classifier + Multi-source 빌드 로그
 
 ## 요약
 

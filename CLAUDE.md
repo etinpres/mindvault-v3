@@ -1,8 +1,8 @@
-# MindVault v2
+# MindVault v3
 
 ## Project
 
-MindVault v2 — Claude Code 세션 간 기억 유지 시스템. MindVault v1의 실패 교훈을 반영해 스코프를 극단적으로 좁힌 재시도.
+MindVault v3 — Claude Code 세션 간 기억 유지 시스템. MindVault v1의 실패 교훈을 반영해 스코프를 극단적으로 좁힌 재시도.
 
 ### 풀려는 문제
 

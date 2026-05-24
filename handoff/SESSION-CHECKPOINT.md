@@ -200,7 +200,7 @@ bash ~/my-folder/apps/mindvault-v3/uninstall.sh --purge-vec
 
 ---
 
-## MindVault v2 현황 요약
+## MindVault v3 현황 요약
 
 | Layer | 상태 | 기능 |
 |---|---|---|

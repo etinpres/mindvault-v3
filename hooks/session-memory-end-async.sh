@@ -1,5 +1,5 @@
 #!/bin/bash
-# MindVault v2 — SessionEnd 비동기 래퍼.
+# MindVault v3 — SessionEnd 비동기 래퍼.
 # 원본 session-memory-end.py가 Gemma를 동기 호출하여 exit 30s+ 블로킹 → detach로 해결.
 # 2026-05-22: 무한 재귀 방지 guard 추가 (sub-session에서 즉시 exit).
 # 2026-05-24 (NEXT-19): Claude Code 가 hook subprocess spawn 시 본체 env 만 inherit —

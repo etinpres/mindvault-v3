@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# MindVault v2 installer — deploys SessionStart hook to ~/.claude/.
+# MindVault v3 installer — deploys SessionStart hook to ~/.claude/.
 # Idempotent; safe to re-run. Creates settings.json.bak before edit.
 
 set -euo pipefail

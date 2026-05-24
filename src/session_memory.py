@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MindVault v2 — SessionStart 훅. 최근 N개 세션을 Claude Code(`claude -p`)로 요약해 컨텍스트에 주입.
+"""MindVault v3 — SessionStart 훅. 최근 N개 세션을 Claude Code(`claude -p`)로 요약해 컨텍스트에 주입.
 
 2026-05-22 변경: Gemma MLX (45초 cache MISS) → `claude -p --model haiku` (10-15초).
 recursion guard 환경변수로 sub-session에서 자기 자신 발동 차단.
@@ -20,7 +20,7 @@ from pathlib import Path
 PROJECTS_DIR = Path("/Users/yonghaekim/.claude/projects/-Users-yonghaekim-my-folder")
 CACHE_DIR = Path("/Users/yonghaekim/.claude/mindvault-v3/cache")
 DEBUG_LOG = Path("/Users/yonghaekim/.claude/mindvault-v3/debug.log")
-SIGNATURE = "# 지난 세션 요약 (MindVault v2)"
+SIGNATURE = "# 지난 세션 요약 (MindVault v3)"
 RECURSION_GUARD_ENV = "MV3_HOOK_RECURSION_GUARD"
 CLAUDE_FALLBACK_PATH = "/Users/yonghaekim/.nvm/versions/node/v24.13.0/bin/claude"
 CLAUDE_MODEL = "haiku"

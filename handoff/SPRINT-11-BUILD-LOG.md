@@ -3,7 +3,7 @@ name: handoff-sprint11-build-log
 description: Sprint 11 build log — hook 회수 품질 개선. SNIPPET_CHARS 160→600 발췌 확장 + query keyword 매치 밀집도 sliding window broad word filter, _expand_wikilinks raw_cosine 게이트(factor 0.75) 무관 1-hop 노이즈 차단, MV3_EXTRA_MEMORY_DIRS env var으로 handoff 인덱싱 scope 추가
 ---
 
-MindVault v2 Sprint 11 — hook 회수 품질 개선 빌드 로그
+MindVault v3 Sprint 11 — hook 회수 품질 개선 빌드 로그
 
 ## 요약
 

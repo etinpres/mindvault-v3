@@ -3,7 +3,7 @@ name: handoff-sprint12-build-log
 description: Sprint 12 build log — handoff 8개 .md 파일에 YAML frontmatter(name+description) 추가해 description 임베딩 활성화 + FTS-only fallback 잡담 회귀 fix(vec_available 조건 추가, fts_gate=raw_cosine_min×0.5)
 ---
 
-MindVault v2 Sprint 12 — handoff frontmatter + FTS 게이트 강화 빌드 로그
+MindVault v3 Sprint 12 — handoff frontmatter + FTS 게이트 강화 빌드 로그
 
 ## 요약
 
