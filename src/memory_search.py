@@ -107,6 +107,66 @@ def normalize_scores(combined: dict[str, dict]) -> None:
         v["score"] = (v["score"] - lo) / span
 
 
+# NEXT-31 (2026-05-24): alias_index 캐시 + lookup helper.
+# alias_generator.py 가 SessionEnd/수동 trigger 로 Gemma batch 호출하여
+# ~/.claude/mindvault-v3/alias_index.json 에 메모리당 별칭 5개 사전 캐시.
+# 검색 시 latency 0 lookup — JSON 파일 read + 토큰 set 교집합.
+_ALIAS_INDEX_CACHE: dict | None = None
+_ALIAS_INDEX_MTIME: float = 0.0
+ALIAS_INDEX_PATH = Path("~/.claude/mindvault-v3/alias_index.json").expanduser()
+ALIAS_BOOST_TOKEN_MIN = 2  # 1자 토큰은 false positive 위험 (한국어 "안","함")
+
+
+def _load_alias_index() -> dict:
+    """mtime 기반 lazy reload. 캐시 hit 시 즉시 반환."""
+    global _ALIAS_INDEX_CACHE, _ALIAS_INDEX_MTIME
+    try:
+        mt = ALIAS_INDEX_PATH.stat().st_mtime
+    except OSError:
+        return {}
+    if _ALIAS_INDEX_CACHE is not None and mt == _ALIAS_INDEX_MTIME:
+        return _ALIAS_INDEX_CACHE
+    try:
+        _ALIAS_INDEX_CACHE = json.loads(ALIAS_INDEX_PATH.read_text())
+        _ALIAS_INDEX_MTIME = mt
+    except (json.JSONDecodeError, OSError):
+        _ALIAS_INDEX_CACHE = {}
+    return _ALIAS_INDEX_CACHE
+
+
+def _alias_boost_paths(query: str) -> set[str]:
+    """query 토큰들 중 어떤 메모리의 alias 와 정확 일치하는 path 셋.
+
+    매칭 규칙 (엄격):
+    - alias 토큰 (2자+) 과 query 토큰 (2자+) 의 정확 set 교집합만 인정
+    - substring 매칭 X — 회귀(잘못된 boost) 차단
+    - 한 메모리당 최대 1번만 추가
+    """
+    idx = _load_alias_index()
+    if not idx:
+        return set()
+    q_tokens = {
+        t.lower() for t in re.findall(r"[가-힣A-Za-z0-9]+", query)
+        if len(t) >= ALIAS_BOOST_TOKEN_MIN
+    }
+    if not q_tokens:
+        return set()
+    matched: set[str] = set()
+    for path, info in idx.items():
+        for alias in info.get("aliases", []):
+            a_lower = alias.lower()
+            a_tokens = {
+                t for t in re.findall(r"[가-힣A-Za-z0-9]+", a_lower)
+                if len(t) >= ALIAS_BOOST_TOKEN_MIN
+            }
+            # 토큰 set 정확 교집합 — substring 회귀 ("영상 리포트" alias 가
+            # "리포트 정리" query 를 잡아 ranking 거꾸로 만드는 케이스 차단)
+            if a_tokens and a_tokens & q_tokens:
+                matched.add(path)
+                break
+    return matched
+
+
 def _fts_escape(query: str) -> str:
     """FTS5 MATCH 쿼리 생성.
 
@@ -410,6 +470,14 @@ def recall_memory(
         if qvec is not None:
             vec_rows, raw_cosine_map = _vec_top_k(conn, qvec, limit=10)
 
+        # NEXT-31 (2026-05-24): alias_index 자산은 alias_generator.py 로 ship
+        # 했으나, memory_search 직접 통합은 cohort 측정에서 회귀 (WEAK correct
+        # 5/15 → 3/15) 일으켜 보류. 회귀 원인: Gemma 가 생성한 alias 가
+        # description 표현과 너무 가깝고 ("영상 리포트" → "리포트 정리" 매칭),
+        # 정작 사용자가 쓰는 우회 표현 ("프린터", "기획안") 은 거의 안 생성.
+        # 향후 sprint (NEXT-32) 에서 (a) alias 생성 prompt 정교화, (b) 더
+        # narrow 한 토큰 매칭(예: 두 토큰 동시 일치만), (c) alias_index 별도
+        # FTS5 테이블로 분리해 RRF 정상 흐름으로 합류 — 중 하나 시도.
         if not vec_rows and not fts_rows:
             _debug(f"no candidates query={query!r}")
             return []
