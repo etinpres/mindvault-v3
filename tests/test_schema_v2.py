@@ -1,4 +1,9 @@
-"""Sprint 4 Task 2 — schema V2 마이그레이션 검증."""
+"""Sprint 4 Task 2 — schema 마이그레이션 검증.
+
+원래 v1→v2 검증. Sprint 13/14에서 schema 가 v3 로 진화 (SCHEMA_VERSION=3).
+expected 값과 함수명은 현재 SCHEMA_VERSION 따라 갱신. 기존 v1→v3 직접 마이그레이션
+경로 (skip intermediate v2) 가 운영에서 잘 동작하는지 같이 검증한다.
+"""
 import sqlite3
 import sys
 import tempfile
@@ -9,9 +14,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from indexer import open_db, SCHEMA_VERSION
 
 
-class TestSchemaV2(unittest.TestCase):
-    def test_schema_version_is_2(self):
-        self.assertEqual(SCHEMA_VERSION, 2)
+class TestSchemaCurrent(unittest.TestCase):
+    def test_schema_version_matches_current(self):
+        # Sprint 13/14 에서 v2 → v3 진화. SCHEMA_VERSION 상수가 단일 SOT.
+        self.assertEqual(SCHEMA_VERSION, 3)
 
     def test_all_tables_exist_in_fresh_db(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -33,8 +39,8 @@ class TestSchemaV2(unittest.TestCase):
             finally:
                 conn.close()
 
-    def test_v1_db_migrates_to_v2_preserving_sessions(self):
-        """V1 스키마로 만든 DB가 V2로 마이그레이션돼도 sessions 데이터 보존."""
+    def test_v1_db_migrates_to_current_preserving_sessions(self):
+        """V1 스키마로 만든 DB가 현재 SCHEMA_VERSION 로 마이그레이션돼도 sessions 데이터 보존."""
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "test.db"
             # V1 스키마로 수동 생성 + sessions row 1개 삽입
@@ -70,11 +76,11 @@ class TestSchemaV2(unittest.TestCase):
             # open_db로 마이그레이션 트리거
             conn = open_db(db)
             try:
-                # version 2로 bump
+                # 현재 SCHEMA_VERSION 으로 bump (Sprint 13/14: v3)
                 ver = conn.execute(
                     "SELECT value FROM meta WHERE key='schema_version'"
                 ).fetchone()[0]
-                self.assertEqual(ver, "2")
+                self.assertEqual(ver, str(SCHEMA_VERSION))
                 # sessions 데이터 보존
                 row = conn.execute(
                     "SELECT session_id FROM sessions WHERE session_id='preserve-me'"
