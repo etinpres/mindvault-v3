@@ -8,11 +8,12 @@ MindVault v3 — Claude Code 세션 간 기억 유지 시스템. MindVault v1의
 
 사용자(비전공 1인 개발자)가 Claude Code에서 세션을 새로 시작하면 이전 맥락을 잃어버려, 세션을 끊지 못하고 컨텍스트 윈도우가 폭발하는 악순환. 새 세션을 시작해도 AI가 "딴소리"하는 일이 잦음.
 
-### 해결 방식 — 3단 메모리 아키텍처
+### 해결 방식 — 4-layer 메모리 아키텍처
 
-1. **자동 주입 (1단)** — SessionStart 훅에서 최근 N개 세션을 Gemma 로컬 서버로 요약해 새 세션에 자동 주입
-2. **필요 시 검색 (2단)** — FTS5 풀텍스트 인덱스로 과거 모든 세션 검색 가능. `/recall` 스킬로 호출
-3. **영구 저장 (3단)** — 세션 종료 시 Gemma가 중요 결정/배움을 추출해 기존 `~/.claude/projects/*/memory/` 자동 업데이트
+1. **자동 주입 (Layer 1)** — SessionStart 훅에서 최근 N개 세션을 Gemma 로컬 서버로 요약해 새 세션에 자동 주입
+2. **자연어 검색 (Layer 2)** — FTS5 + Arctic-ko 임베딩 hybrid (RRF) 로 과거 모든 세션·메모리 검색 가능. `/recall` 스킬로 호출
+3. **Memory Compiler (Layer 3)** — 세션 종료 시 Gemma 가 결정/노하우/사실을 추출 → `memory/_procedural/_staged/` 임시 저장 → 형의 `/memory_review` 승인 후 영구 메모리 진입 (Sprint 13~14)
+4. **자동 회수 hook (Layer 4)** — UserPromptSubmit 마다 hybrid 검색으로 관련 메모리를 `system-reminder` 로 자동 주입 (raw cosine 게이트 + query intent classifier 가 잡담 차단, false positive 0%)
 
 ### 핵심 원칙 (MindVault v1 실패 교훈)
 
