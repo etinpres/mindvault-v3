@@ -28,8 +28,12 @@ class TestAppleSiliconGuard(unittest.TestCase):
             env=env,
             input=b"n\n",
         )
-        self.assertIn(b"Apple Silicon", r.stdout + r.stderr)
-        self.assertIn(b"v3.3.0", r.stdout + r.stderr)
+        out = r.stdout + r.stderr
+        self.assertIn(b"Apple Silicon", out)
+        # v3.2.6 H4: 미래 release 예고 ("v3.3.0 예정") 제거됨.
+        # 형 [[feedback-no-future-release-predictions]] 규칙 회귀 차단.
+        self.assertNotIn(b"v3.3.0", out)
+        self.assertIn(b"\xeb\xaf\xb8\xec\xa7\x80\xec\x9b\x90", out)  # "미지원"
         self.assertNotEqual(r.returncode, 0)
 
     def test_arm64_skips_warning(self):

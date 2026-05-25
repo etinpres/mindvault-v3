@@ -16,6 +16,7 @@ config 형식:
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -47,12 +48,21 @@ def load_sources(config_path: Path | None = None) -> list[str]:
 
 
 def save_sources(srcs: list[str], config_path: Path | None = None) -> None:
+    # v3.2.6 Round 2 (LR2): atomic write — sources.json 가 indexer/recall 의
+    # 진입점이라 partial JSON 손상 시 색인 path 가 깨짐. tmp + os.replace.
     config_path = _resolve_cfg(config_path)
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(
-        json.dumps({"sources": srcs}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    tmp = config_path.with_suffix(config_path.suffix + ".tmp")
+    payload = json.dumps({"sources": srcs}, ensure_ascii=False, indent=2)
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, config_path)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def cmd_list(config_path: Path | None = None) -> int:

@@ -178,11 +178,20 @@ def cache_get(key: str) -> str | None:
 
 
 def cache_set(key: str, value: str) -> None:
+    # v3.2.6 Round 2 (LR1): atomic write — parallel SessionStart hook 이 동일
+    # key 에 동시 write 시 partial 잔류 회피. tmp + os.replace 패턴.
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        (CACHE_DIR / f"{key}.txt").write_text(value)
+        target = CACHE_DIR / f"{key}.txt"
+        tmp = target.with_suffix(".txt.tmp")
+        tmp.write_text(value)
+        os.replace(tmp, target)
     except OSError as e:
         _debug(f"cache_set failed: {e}")
+        try:
+            tmp.unlink(missing_ok=True)
+        except (OSError, UnboundLocalError):
+            pass
 
 
 def cache_purge_old() -> None:

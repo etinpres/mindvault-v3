@@ -67,11 +67,17 @@ def embed(text: str, kind: str = "passage") -> list[float]:
 class Handler(BaseHTTPRequestHandler):
     def _send_json(self, status: int, payload: dict) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        # v3.2.6 L1: client 가 hook timeout 으로 socket 끊은 뒤 응답 쓰면
+        # BrokenPipeError 가 err.log 에 traceback 누적 (~24건/2061라인). 정상
+        # disconnect 이므로 silent log 로 처리해 노이즈 차단.
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError) as e:
+            log.warning("client disconnected before response: %s", e)
 
     def do_GET(self) -> None:
         if self.path == "/health":

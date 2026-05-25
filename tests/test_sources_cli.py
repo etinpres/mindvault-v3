@@ -66,6 +66,18 @@ class TestSourcesCli(unittest.TestCase):
             rc = cmd_remove("/no/such")
         self.assertEqual(rc, 0)  # 존재 안 해도 OK 반환
 
+    def test_save_sources_atomic(self):
+        """v3.2.6 Round 2 LR2: save_sources 가 tmp + os.replace — partial JSON
+        손상으로 indexer 가 색인 path 깨지지 않게."""
+        from sources_cli import save_sources
+        save_sources(["/some/dir"], config_path=self.cfg)
+        leftover = list(self.cfg.parent.glob("*.tmp"))
+        self.assertEqual(leftover, [])
+        import inspect, sources_cli
+        src = inspect.getsource(sources_cli.save_sources)
+        self.assertIn("os.replace", src)
+        self.assertIn(".tmp", src)
+
 
 class TestIndexerExtraDirsUnion(unittest.TestCase):
     """memory_indexer._extra_memory_dirs() 가 env + config 합치는지."""

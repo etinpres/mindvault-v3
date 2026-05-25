@@ -220,5 +220,36 @@ class _StubIdx:
         return {"updated": 0, "skipped": 0, "removed": 0}
 
 
+class TestDedupAtomicWrites(unittest.TestCase):
+    """v3.2.6 Round 3 NR2: dedup_cli._backup 와 canonical overwrite 가 atomic.
+
+    backup partial 잔류 시 rollback 불가, canonical partial 잔류 시 영구 메모리
+    손상. tmp + os.replace 패턴 적용.
+    """
+
+    def test_backup_uses_atomic_write(self):
+        from dedup_cli import _backup
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "memo.md"
+            target.write_text("---\nname: x\n---\nbody")
+            bak = _backup(target)
+            self.assertTrue(bak.is_file())
+            # 성공 후 .tmp 잔존 없음.
+            leftover = list(Path(tmp).glob("*.tmp"))
+            self.assertEqual(leftover, [])
+
+    def test_backup_source_uses_os_replace(self):
+        import inspect, dedup_cli
+        src = inspect.getsource(dedup_cli._backup)
+        self.assertIn("os.replace", src)
+        self.assertIn(".tmp", src)
+
+    def test_canonical_write_uses_os_replace(self):
+        import inspect, dedup_cli
+        src = inspect.getsource(dedup_cli.cmd_merge)
+        # canonical write 도 atomic context.
+        self.assertIn("os.replace", src)
+
+
 if __name__ == "__main__":
     unittest.main()

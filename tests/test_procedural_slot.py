@@ -302,6 +302,72 @@ class TestSessionEndStagedSlot(unittest.TestCase):
                 self.assertNotIn("_procedural", str(p2))
 
 
+class TestWriteStagedAtomic(unittest.TestCase):
+    """v3.2.6 H2: write_staged 가 tmp + os.replace atomic 패턴인지 회귀.
+
+    crash 직전 직접 write_text 가 절반만 flush 되면 다음 /memory_review 가
+    broken frontmatter parse 에 실패. alias_generator 와 동일 패턴 적용 검증.
+    """
+
+    def _item(self):
+        return {
+            "type": "feedback",
+            "title": "atomic test",
+            "body": "body",
+            "reason": "r",
+            "evidence": "e",
+        }
+
+    def test_success_leaves_no_tmp_file(self):
+        import session_memory_end as sme
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            with patch.object(sme, "MEMORY_DIR", base), \
+                 patch.object(sme, "STAGED_DIR", base / "_staged"), \
+                 patch.object(sme, "PROCEDURAL_DIR", base / "_procedural"), \
+                 patch.object(
+                     sme,
+                     "PROCEDURAL_STAGED_DIR",
+                     base / "_procedural" / "_staged",
+                 ):
+                result = sme.write_staged(self._item(), "deadbeef")
+                self.assertIsNotNone(result)
+                # 성공 시 .tmp 파일이 남아있으면 atomic write 패턴 결손.
+                leftover = list((base / "_staged").glob("*.tmp"))
+                self.assertEqual(leftover, [])
+                # 본 파일은 정상 존재 + frontmatter 시작.
+                self.assertTrue(result.exists())
+                self.assertTrue(result.read_text().startswith("---\n"))
+
+    def test_replace_failure_cleans_tmp(self):
+        """os.replace 가 OSError 던지면 .tmp 가 잔존하지 않아야 한다."""
+        import session_memory_end as sme
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            with patch.object(sme, "MEMORY_DIR", base), \
+                 patch.object(sme, "STAGED_DIR", base / "_staged"), \
+                 patch.object(sme, "PROCEDURAL_DIR", base / "_procedural"), \
+                 patch.object(
+                     sme,
+                     "PROCEDURAL_STAGED_DIR",
+                     base / "_procedural" / "_staged",
+                 ), \
+                 patch.object(sme.os, "replace", side_effect=OSError("disk full")):
+                result = sme.write_staged(self._item(), "deadbeef")
+                self.assertIsNone(result)
+                # OSError 후에도 .tmp 가 cleanup 됨.
+                leftover = list((base / "_staged").glob("*.tmp"))
+                self.assertEqual(leftover, [])
+
+    def test_uses_os_replace_not_write_text_direct(self):
+        """source 가 직접 path.write_text 대신 tmp → os.replace 패턴인지."""
+        import inspect
+        import session_memory_end as sme
+        src = inspect.getsource(sme.write_staged)
+        self.assertIn("os.replace", src)
+        self.assertIn(".tmp", src)
+
+
 class TestSlugConflictResolution(unittest.TestCase):
     """Sprint NEXT-6 — session 안 동일 slug 다중 candidate 처리."""
 
@@ -476,6 +542,22 @@ class TestReviewCliRoutes(unittest.TestCase):
             out = json.loads(buf.getvalue())
             types = sorted([it["type"] for it in out["staged"]])
             self.assertEqual(types, ["feedback", "procedural"])
+
+
+class TestReviewApproveAtomic(unittest.TestCase):
+    """v3.2.6 Round 2 NR1: memory_review_cli.approve 가 영구 메모리를
+    overwrite 하는 critical path. tmp + os.replace atomic 패턴인지 source-level
+    회귀 차단 (실제 approve flow 는 stdin/UI 의존이라 source 검증으로 충분).
+    """
+
+    def test_approve_uses_atomic_write(self):
+        import inspect
+        import memory_review_cli as mrc
+        src = inspect.getsource(mrc)
+        # 3 promote/backup path (update overwrite + 신규 promote + bak backup)
+        # 전부 .tmp/os.replace 패턴. NR1 + NR3 회귀 차단.
+        self.assertGreaterEqual(src.count("os.replace"), 3,
+            "memory_review_cli 의 promote(2) + bak(1) 모두 atomic write 적용 필요")
 
 
 if __name__ == "__main__":

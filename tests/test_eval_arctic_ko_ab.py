@@ -47,5 +47,23 @@ class TestEvalGuard(unittest.TestCase):
             del sys.modules["eval_arctic_ko_ab"]
 
 
+class TestArcticServerBrokenPipeHandling(unittest.TestCase):
+    """v3.2.6 L1: arctic_ko_server._send_json 가 client disconnect 시 silent log.
+
+    이전엔 hook timeout 으로 client 가 socket 끊으면 except 블록의 _send_json
+    이 broken socket 에 write 시도해 BrokenPipeError traceback 가 err.log 에
+    누적 (~24건/2061라인). source-level 회귀 차단.
+    """
+
+    def test_send_json_catches_broken_pipe(self):
+        src_path = Path(__file__).parent.parent / "scripts" / "arctic_ko_server.py"
+        text = src_path.read_text()
+        snd_idx = text.index("def _send_json(")
+        next_def = text.find("\n    def ", snd_idx + 1)
+        body = text[snd_idx:next_def if next_def != -1 else None]
+        self.assertIn("BrokenPipeError", body)
+        self.assertIn("ConnectionResetError", body)
+
+
 if __name__ == "__main__":
     unittest.main()

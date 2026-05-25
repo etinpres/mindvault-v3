@@ -67,10 +67,43 @@ CLAUDE_SCHEMA = {
     "additionalProperties": False,
 }
 
-MEMORY_DIRS = [
-    Path("~/.claude/projects/-Users-yonghaekim/memory").expanduser(),
-    Path("~/.claude/projects/-Users-yonghaekim-my-folder/memory").expanduser(),
-]
+# v3.2.6 H3: 하드코딩 2개 슬롯만으로는 NEXT-8 PROJECTS_ROOT 비대칭 dogfooding gap
+# 이 alias 에도 재발 — cwd 별 projects 디렉토리가 자동 생성되므로 (Sprint 6) 모든
+# slot 을 런타임에 자동 발견. .md 가 있는 활성 슬롯만 흡수.
+# 환경변수 MV3_EXTRA_MEMORY_DIRS (콜론 구분) 로 명시 override 가능.
+PROJECTS_ROOT = Path("~/.claude/projects").expanduser()
+
+
+def discover_memory_dirs() -> list[Path]:
+    dirs: list[Path] = []
+    seen: set[str] = set()
+    if PROJECTS_ROOT.is_dir():
+        for child in sorted(PROJECTS_ROOT.iterdir()):
+            mem = child / "memory"
+            if not mem.is_dir():
+                continue
+            if not any(mem.glob("*.md")):
+                continue
+            key = str(mem.resolve())
+            if key not in seen:
+                seen.add(key)
+                dirs.append(mem)
+    extra = os.environ.get("MV3_EXTRA_MEMORY_DIRS", "")
+    for raw in extra.split(":"):
+        raw = raw.strip()
+        if not raw:
+            continue
+        path = Path(raw).expanduser()
+        if not path.is_dir():
+            continue
+        key = str(path.resolve())
+        if key not in seen:
+            seen.add(key)
+            dirs.append(path)
+    return dirs
+
+
+MEMORY_DIRS = discover_memory_dirs()
 
 # Gemma 응답이 thinking trace 또는 JSON 잡음으로 새는 케이스 차단 위해 보수적 prompt.
 _PROMPT = """\
@@ -268,7 +301,8 @@ def generate(
             existing = {}
 
     targets: list[Path] = []
-    for d in MEMORY_DIRS:
+    # v3.2.6 H3: 매 호출마다 재발견 — 새 cwd 슬롯이 생기면 즉시 흡수.
+    for d in discover_memory_dirs():
         if not d.is_dir():
             continue
         for md in sorted(d.glob("*.md")):

@@ -320,11 +320,19 @@ def cmd_approve(filename: str) -> int:
                 update_of = ""
             else:
                 bak = target.with_suffix(target.suffix + ".bak")
+                # v3.2.6 Round 3 NR3: atomic backup — overwrite 직전 partial .bak
+                # 잔류 시 향후 rollback 시도 실패. tmp + os.replace.
+                _bak_tmp = target.with_suffix(target.suffix + ".bak.tmp")
                 try:
-                    bak.write_text(
+                    _bak_tmp.write_text(
                         target.read_text(encoding="utf-8"), encoding="utf-8"
                     )
+                    os.replace(_bak_tmp, bak)
                 except OSError as e:
+                    try:
+                        _bak_tmp.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                     _debug(f"backup write fail {target}: {e}")
                     sys.stdout.write(json.dumps({
                         "ok": False, "error": f"backup fail: {e}",
@@ -341,7 +349,19 @@ def cmd_approve(filename: str) -> int:
                     "---\n\n"
                     f"{body.rstrip()}\n"
                 )
-                target.write_text(final_fm, encoding="utf-8")
+                # v3.2.6 Round 2 NR1: atomic write — approve 가 영구 메모리를
+                # overwrite 하는 critical path. partial 잔류 시 다음 hook recall
+                # 이 broken frontmatter parse 실패.
+                _tmp = target.with_suffix(target.suffix + ".tmp")
+                try:
+                    _tmp.write_text(final_fm, encoding="utf-8")
+                    os.replace(_tmp, target)
+                except OSError:
+                    try:
+                        _tmp.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    raise
                 src.unlink()
                 reindex_info: dict = {}
                 try:
@@ -374,7 +394,17 @@ def cmd_approve(filename: str) -> int:
             "---\n\n"
             f"{body.rstrip()}\n"
         )
-        target.write_text(final_fm, encoding="utf-8")
+        # v3.2.6 Round 2 NR1: atomic write — 신규 promote 도 동일 패턴.
+        _tmp = target.with_suffix(target.suffix + ".tmp")
+        try:
+            _tmp.write_text(final_fm, encoding="utf-8")
+            os.replace(_tmp, target)
+        except OSError:
+            try:
+                _tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
 
         if INDEX_MD.is_file():
             line = f"- [{meta.get('name', slug)}]({slug}.md) — {meta.get('reason', '')}\n"

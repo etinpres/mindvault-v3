@@ -53,8 +53,10 @@ class TestAliasIndexSync(unittest.TestCase):
 
     def _patched_generate(self, **kwargs):
         from alias_generator import generate
-        # MEMORY_DIRS / INDEX_PATH 를 임시 경로로 override
+        # v3.2.6 H3: generate() 가 매 호출마다 discover_memory_dirs() 를 호출.
+        # MEMORY_DIRS module constant 만 patch 하면 무효 — 함수도 함께 patch.
         with patch("alias_generator.MEMORY_DIRS", [self.mem_dir]), \
+             patch("alias_generator.discover_memory_dirs", return_value=[self.mem_dir]), \
              patch("alias_generator.INDEX_PATH", self.index_path), \
              patch("alias_generator._call_gemma", return_value=["mock_alias"]):
             return generate(**kwargs)
@@ -146,6 +148,68 @@ class TestSessionEndAliasHook(unittest.TestCase):
                 self.assertIn("simulated", str(e))
         finally:
             alias_generator.generate = original
+
+
+class TestDiscoverMemoryDirs(unittest.TestCase):
+    """v3.2.6 H3: alias_generator 가 cwd-별 모든 memory slot 을 자동 발견.
+
+    이전엔 ``MEMORY_DIRS`` 가 2개 path 만 hardcoded — Sprint 6 의 cwd-별
+    projects 자동 생성과 비대칭이라 새 slot 의 메모리는 alias boost 누락.
+    NEXT-8 PROJECTS_ROOT family 의 dogfooding gap 회귀 차단.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="mv3-discover-"))
+        self.projects = self.tmp / "projects"
+        self.projects.mkdir()
+        # slot 3개 — 그 중 2개에만 .md 존재 (1개는 빈 디렉토리)
+        for slug, has_md in [("slot-a", True), ("slot-b", True), ("slot-empty", False)]:
+            mem = self.projects / slug / "memory"
+            mem.mkdir(parents=True)
+            if has_md:
+                (mem / "feedback_x.md").write_text(
+                    "---\nname: x\ndescription: x\n---\nbody"
+                )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_only_dirs_with_md_files_discovered(self):
+        import alias_generator
+        with patch.object(alias_generator, "PROJECTS_ROOT", self.projects), \
+             patch.dict("os.environ", {}, clear=False):
+            os_env_before = "MV3_EXTRA_MEMORY_DIRS"
+            import os as _os
+            _os.environ.pop(os_env_before, None)
+            dirs = alias_generator.discover_memory_dirs()
+        names = sorted(d.parent.name for d in dirs)
+        self.assertIn("slot-a", names)
+        self.assertIn("slot-b", names)
+        self.assertNotIn("slot-empty", names)
+
+    def test_extra_env_dirs_appended(self):
+        import alias_generator
+        import os as _os
+        extra = self.tmp / "external" / "memory"
+        extra.mkdir(parents=True)
+        (extra / "z.md").write_text("body")
+        with patch.object(alias_generator, "PROJECTS_ROOT", self.projects), \
+             patch.dict(_os.environ, {"MV3_EXTRA_MEMORY_DIRS": str(extra)}, clear=False):
+            dirs = alias_generator.discover_memory_dirs()
+        resolved = {str(d.resolve()) for d in dirs}
+        self.assertIn(str(extra.resolve()), resolved)
+
+    def test_duplicate_paths_deduped(self):
+        import alias_generator
+        import os as _os
+        slot_a = self.projects / "slot-a" / "memory"
+        with patch.object(alias_generator, "PROJECTS_ROOT", self.projects), \
+             patch.dict(_os.environ, {"MV3_EXTRA_MEMORY_DIRS": str(slot_a)}, clear=False):
+            dirs = alias_generator.discover_memory_dirs()
+        # slot-a 가 PROJECTS_ROOT 안에 이미 있는데 env 로 재지정해도 중복 없음.
+        count = sum(1 for d in dirs if d.resolve() == slot_a.resolve())
+        self.assertEqual(count, 1)
 
 
 if __name__ == "__main__":

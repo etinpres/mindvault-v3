@@ -126,11 +126,20 @@ def write_staged(
     if item.get("diff_summary"):
         fm_lines.append(f"diff_summary: {item['diff_summary']}")
     frontmatter = "---\n" + "\n".join(fm_lines) + "\n---\n\n" + f"{item['body']}\n"
+    # v3.2.6 H2: atomic write — tmp + os.replace 로 partial markdown 차단.
+    # crash 직전 write_text 가 절반만 flush 되면 다음 /memory_review 가
+    # broken frontmatter parse 에 실패. alias_generator 의 동일 패턴 따름.
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
     try:
-        path.write_text(frontmatter, encoding="utf-8")
+        tmp_path.write_text(frontmatter, encoding="utf-8")
+        os.replace(tmp_path, path)
         return path
     except OSError as e:
         _debug(f"write fail {filename}: {e}")
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         return None
 
 

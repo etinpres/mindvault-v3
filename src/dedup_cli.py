@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from collections import defaultdict
@@ -131,8 +132,20 @@ def cmd_list() -> int:
 
 
 def _backup(path: Path) -> Path:
+    # v3.2.6 Round 3 NR2: atomic backup — partial .bak 잔류 시 향후 복구 시도
+    # 실패. 본 dedup 가 canonical overwrite 직전에 backup 만들기 때문에 critical.
     bak = path.with_suffix(path.suffix + ".bak")
-    bak.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    tmp = path.with_suffix(path.suffix + ".bak.tmp")
+    content = path.read_text(encoding="utf-8")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, bak)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     return bak
 
 
@@ -202,7 +215,17 @@ def cmd_merge(name_key: str, dry_run: bool = False) -> int:
         "---\n\n"
         f"{merged_body.rstrip()}\n"
     )
-    canonical.write_text(final_fm, encoding="utf-8")
+    # v3.2.6 Round 3 NR2: canonical overwrite atomic — merged 영구 메모리 write.
+    _canon_tmp = canonical.with_suffix(canonical.suffix + ".tmp")
+    try:
+        _canon_tmp.write_text(final_fm, encoding="utf-8")
+        os.replace(_canon_tmp, canonical)
+    except OSError:
+        try:
+            _canon_tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
     dropped = []
     for o in others:

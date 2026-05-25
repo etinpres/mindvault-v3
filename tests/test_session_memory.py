@@ -189,6 +189,17 @@ class TestCache(unittest.TestCase):
     def test_get_missing(self):
         self.assertIsNone(sm.cache_get("does-not-exist"))
 
+    def test_cache_set_atomic_no_tmp_leftover(self):
+        """v3.2.6 Round 2 LR1: cache_set 가 tmp + os.replace 패턴 — 성공 시
+        .tmp 잔존 없고 source 에 os.replace 명시."""
+        sm.cache_set("atomic", "value")
+        leftover = list(Path(self.tmp).glob("*.tmp"))
+        self.assertEqual(leftover, [])
+        import inspect
+        src = inspect.getsource(sm.cache_set)
+        self.assertIn("os.replace", src)
+        self.assertIn(".tmp", src)
+
 
 class TestGemmaClientErrorHandling(unittest.TestCase):
     """call_gemma 의 실패 경로 — 함수명은 legacy 지만 내부 구현은 `subprocess.run`

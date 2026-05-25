@@ -33,6 +33,7 @@ if "MV3_HOOK_REEXEC" not in _os_bootstrap.environ:
         _sys_bootstrap.exit(0)
 
 import json
+import re
 import signal
 import subprocess
 import sys
@@ -254,13 +255,25 @@ def _alarm_handler(_signum, _frame):
     raise _Timeout()
 
 
+# v3.2.6 H1: memory 본문에 '</system-reminder>' literal 이 들어가면 hook 출력이
+# early-close 되고 뒤 내용이 system context 밖으로 누출. zero-width space 삽입
+# 으로 visually 동일하지만 Claude Code parser 의 close tag 매칭은 차단.
+_CLOSE_TAG_RE = re.compile(r"</(\s*)(system-reminder)(\s*)>", re.IGNORECASE)
+
+
+def _sanitize(text: str) -> str:
+    if not text:
+        return text
+    return _CLOSE_TAG_RE.sub(r"</\1​\2\3>", text)
+
+
 def _format_output(results: list[dict]) -> str:
     lines = ["<system-reminder>", "# 메모리 회수 (Layer 4 hybrid)"]
     for r in results:
         srcs = "+".join(r.get("source") or [])
-        name = r.get("name") or "(unnamed)"
-        desc = r.get("description") or ""
-        snippet = r.get("snippet") or ""
+        name = _sanitize(r.get("name") or "(unnamed)")
+        desc = _sanitize(r.get("description") or "")
+        snippet = _sanitize(r.get("snippet") or "")
         score = r.get("score", 0)
         lines.append(f"- **{name}** (score {score:.2f}, {srcs}) — {desc}")
         if snippet:

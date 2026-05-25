@@ -11,7 +11,7 @@ _OS="$(uname -s)"
 if [ "$_ARCH" != "arm64" ] || [ "$_OS" != "Darwin" ]; then
   echo "⚠ MindVault v3 의 MLX 백엔드는 Apple Silicon Mac 에서만 동작합니다."
   echo "  현재 환경: $_OS $_ARCH"
-  echo "  Linux/Intel Mac 지원은 v3.3.0 (백엔드 추상화) 예정."
+  echo "  Linux/Intel Mac 미지원 (MLX 백엔드 Apple Silicon 전용)."
   # non-interactive (CI, curl|bash, no stdin) 에선 read 가 EOF로 즉시 fail —
   # set -e 로 silent abort 되니, 명시 처리해서 user-facing 메시지 보장.
   if [ ! -t 0 ]; then
