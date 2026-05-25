@@ -26,12 +26,14 @@ def _default_projects_dir() -> Path:
     if override:
         return Path(override).expanduser()
     home_slug = "-" + str(Path.home()).strip("/").replace("/", "-")
-    return Path("~/.claude/projects").expanduser() / home_slug
+    return Path(os.environ.get("MV3_PROJECTS_ROOT", "~/.claude/projects")).expanduser() / home_slug
 
 
+# v3.2.7: production state pollution 방지. MV3_DATA_DIR env var 우선.
+_MV3_DATA_DIR = Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
 PROJECTS_DIR = _default_projects_dir()
-CACHE_DIR = Path("~/.claude/mindvault-v3/cache").expanduser()
-DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
+CACHE_DIR = _MV3_DATA_DIR / "cache"
+DEBUG_LOG = _MV3_DATA_DIR / "debug.log"
 SIGNATURE = "# 지난 세션 요약 (MindVault v3)"
 RECURSION_GUARD_ENV = "MV3_HOOK_RECURSION_GUARD"
 CLAUDE_FALLBACK_PATH = os.path.expanduser("~/.nvm/versions/node/v24.13.0/bin/claude")
@@ -385,7 +387,8 @@ def trigger_background_indexer() -> None:
     실패해도 Sprint 1 훅 결과는 이미 출력되어 있으므로 조용히 무시."""
     try:
         import subprocess
-        indexer = Path("~/.claude/scripts/mindvault/indexer.py").expanduser()
+        # v3.2.7: MV3_SCRIPTS_DIR env var 우선.
+        indexer = Path(os.environ.get("MV3_SCRIPTS_DIR", "~/.claude/scripts/mindvault")).expanduser() / "indexer.py"
         if not indexer.is_file():
             return
         subprocess.Popen(

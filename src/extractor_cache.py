@@ -17,9 +17,11 @@ import time
 from pathlib import Path
 from typing import Optional
 
-CACHE_DB = Path("~/.claude/mindvault-v3/extractor_cache.db").expanduser()
+# v3.2.7: production state pollution 방지. MV3_DATA_DIR env var 우선.
+_MV3_DATA_DIR = Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
+CACHE_DB = _MV3_DATA_DIR / "extractor_cache.db"
 CACHE_DISABLE_ENV = "MV3_EXTRACTOR_CACHE_DISABLE"
-DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
+DEBUG_LOG = _MV3_DATA_DIR / "debug.log"
 
 _init_lock = threading.Lock()
 _initialized = False

@@ -13,6 +13,7 @@ memory_search.py와 같은 게이트 철학:
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -26,7 +27,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-DATA_DIR = Path("~/.claude/mindvault-v3").expanduser()
+# v3.2.7: production state pollution 방지. MV3_DATA_DIR env var 우선.
+DATA_DIR = Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
 DB_PATH = DATA_DIR / "index.db"
 DEBUG_LOG = DATA_DIR / "debug.log"
 GEMMA_URL = "http://localhost:8080/v1/chat/completions"

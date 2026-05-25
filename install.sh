@@ -179,7 +179,17 @@ os.replace(tmp, target)
 PY
   if [ "${MV3_PLIST_SKIP_LAUNCHCTL:-0}" != "1" ]; then
     launchctl unload "$target" 2>/dev/null || true
-    launchctl load -w "$target" 2>/dev/null || true
+    # v3.2.7: load 실패를 silent 로 두지 말 것. 실패 시 stderr 로 warning,
+    # 그리고 launchctl list 로 실제 load 됐는지 verify. fail 시 return 1
+    # 으로 caller (do_step 등) 가 인지.
+    if ! launchctl load -w "$target" 2>/dev/null; then
+      echo "  ⚠ launchctl load failed: $target" >&2
+      return 1
+    fi
+    # v3.2.7: launchctl load -w 가 0 반환했으면 그것 신뢰. 추가 list verify
+    # 는 race window (큰 모델 load 시 수 초 지연) 때문에 false negative 가
+    # 흔해 의미가 없음 — retry 도 단순 informational 이라 제거.
+    # 사용자가 직접 검증하려면 README 의 troubleshooting 참조.
   fi
 }
 
@@ -361,6 +371,12 @@ if ! command -v python3 >/dev/null 2>&1; then
   echo "error: python3 not on PATH" >&2
   exit 1
 fi
+# v3.2.7: MLX (mlx-lm, mlx_embeddings) 3.10+ 필수. 3.9 는 import error.
+if ! python3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
+  echo "error: Python 3.10+ required (MLX 호환). 현재: $(python3 --version 2>&1)" >&2
+  echo "       brew install python@3.10 또는 https://www.python.org/downloads/" >&2
+  exit 1
+fi
 
 mkdir -p "$HOOKS_DIR" "$HOME/.claude/mindvault-v3/cache" "$SCRIPTS_DIR" "$COMMANDS_DIR"
 
@@ -369,13 +385,16 @@ mkdir -p "$HOOKS_DIR" "$HOME/.claude/mindvault-v3/cache" "$SCRIPTS_DIR" "$COMMAN
 # 보고 personal SKILL 백업 복원 (#15) 도 같은 메커니즘 사용.
 INSTALL_MANIFEST_DIR="$HOME/.claude/mindvault-v3"
 INSTALL_MANIFEST="$INSTALL_MANIFEST_DIR/.install-manifest"
+# v3.2.7: manifest atomic build — .tmp 에 쓰고 install 끝에서 mv. 중간 fail
+# 시 기존 manifest 보존 (uninstall.sh 가 stale 일지언정 비어있지 않음).
+INSTALL_MANIFEST_TMP="$INSTALL_MANIFEST_DIR/.install-manifest.tmp"
 mkdir -p "$INSTALL_MANIFEST_DIR"
-: > "$INSTALL_MANIFEST"  # truncate — 매 install 마다 새로 기록
+: > "$INSTALL_MANIFEST_TMP"  # tmp 만 truncate, 실제 manifest 는 install 끝에 mv
 DEPLOY_FAILURES=0
 
 manifest_record() {
-  # type=path 형식, 한 줄
-  echo "$1=$2" >> "$INSTALL_MANIFEST"
+  # type=path 형식, 한 줄. v3.2.7: .tmp 에 기록.
+  echo "$1=$2" >> "$INSTALL_MANIFEST_TMP"
 }
 
 deploy_exec "$SRC" "$TARGET" "session-memory hook" || { DEPLOY_FAILURES=$((DEPLOY_FAILURES+1)); }
@@ -803,6 +822,15 @@ print(f'✓ indexed {n} memories')
     echo "  (initial indexing skipped — run later with: python3 $SCRIPTS_DIR/memory_indexer.py)"
   fi
 
+  # v3.2.7: Arctic-ko cold inference 미리 trigger — 첫 indexer batch 의 5s
+  # embed timeout 8건 누적 회피. health check (200 OK) 는 통과해도 첫 inference
+  # 가 cold (모델 로딩 후 첫 forward pass) 라 indexer 가 일부 잡힘.
+  echo "→ Pre-warming Arctic-ko (cold inference)..."
+  curl -sS -X POST http://127.0.0.1:8081/embed \
+    -H "Content-Type: application/json" \
+    -d '{"text":"warmup","kind":"document"}' \
+    --max-time 60 >/dev/null 2>&1 || true
+
   # 4.9 hook warmup — cold-start latency 미리 지불 (200ms→150ms)
   echo "→ Pre-warming hook (cold start mitigation)..."
   echo '{"prompt":"warmup"}' | python3 "$MEMORY_HOOK_TARGET" >/dev/null 2>&1 || true
@@ -810,6 +838,10 @@ print(f'✓ indexed {n} memories')
 fi
 
 echo ""
+# v3.2.7: manifest atomic commit — 여기까지 도달했으면 모든 deploy 단계가
+# set -e 를 통과. tmp → final 로 atomic mv (os.rename 동치).
+mv "$INSTALL_MANIFEST_TMP" "$INSTALL_MANIFEST"
+
 # v3.2.3 (#16): deploy 실패 누적 시 명시 경고 — 옛 `|| true` 가 silent swallow 했던
 # 결함 fix. "Installation complete" 메시지를 사용자가 보고도 실제로는 skill 누락된
 # 상태였던 시나리오 차단.

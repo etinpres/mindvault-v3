@@ -29,7 +29,8 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-DATA_DIR = Path("~/.claude/mindvault-v3").expanduser()
+# v3.2.7: production state pollution 방지. MV3_DATA_DIR env var 우선.
+DATA_DIR = Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
 DB_PATH = DATA_DIR / "index.db"
 DEBUG_LOG = DATA_DIR / "debug.log"
 LOCK_PATH = DATA_DIR / "memory-indexer.lock"
@@ -43,7 +44,9 @@ EMBED_DIM = 1024
 # cwd=`/Users/<user>/foo` → `~/.claude/projects/-Users-<user>-foo/`) 런타임 glob 으로
 # 모든 슬롯의 memory 디렉토리를 흡수한다. 사용자가 직접 슬러그를 입력할 필요 없음.
 def _discover_memory_dirs() -> list[Path]:
-    root = Path("~/.claude/projects").expanduser()
+    # v3.2.7: env var 우선 — module-level DATA_DIR 패턴과 일관성.
+    import os as _os
+    root = Path(_os.environ.get("MV3_PROJECTS_ROOT", "~/.claude/projects")).expanduser()
     if not root.is_dir():
         return []
     return sorted(p for p in root.glob("*/memory") if p.is_dir())

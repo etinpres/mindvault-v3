@@ -41,7 +41,9 @@ GEMMA_INTENT_TIMEOUT = 0.30
 GEMMA_INTENT_MAX_LEN = 40  # 그 이상 query 는 Gemma 호출 안 함 (cost / latency)
 ENABLE_GEMMA_INTENT_ENV = "MV3_GEMMA_INTENT"
 
-_DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
+# v3.2.7: production state pollution 방지. MV3_DATA_DIR env var 우선.
+_MV3_DATA_DIR = Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
+_DEBUG_LOG = _MV3_DATA_DIR / "debug.log"
 
 
 def _debug(msg: str) -> None:
@@ -243,7 +245,7 @@ def _normalize_gemma_label(raw: str | None) -> str | None:
     return None
 
 
-_GEMMA_CACHE_DB = Path("~/.claude/mindvault-v3/intent_cache.db").expanduser()
+_GEMMA_CACHE_DB = _MV3_DATA_DIR / "intent_cache.db"
 _GEMMA_CACHE_TTL_SEC = 7 * 24 * 3600  # 7일
 _GEMMA_CACHE_DISABLE_ENV = "MV3_GEMMA_INTENT_CACHE_DISABLE"
 _gemma_cache_initialized = False

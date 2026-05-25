@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -23,9 +24,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-DATA_DIR = Path("~/.claude/mindvault-v3").expanduser()
+# v3.2.7: production state pollution 방지. MV3_DATA_DIR / MV3_PROJECTS_ROOT env var 우선.
+DATA_DIR = Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
 DEFAULT_METRICS = DATA_DIR / "metrics.jsonl"
-DEFAULT_PROJECTS_ROOT = Path("~/.claude/projects").expanduser()
+DEFAULT_PROJECTS_ROOT = Path(os.environ.get("MV3_PROJECTS_ROOT", "~/.claude/projects")).expanduser()
 DEBUG_LOG = DATA_DIR / "debug.log"
 
 # Sprint 15: hook 회수 직후 다음 사용자 turn 에서 자주 나타나는 negative cue 패턴.

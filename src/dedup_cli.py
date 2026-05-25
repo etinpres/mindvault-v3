@@ -37,7 +37,8 @@ from memory_indexer import (  # noqa: E402
     parse_frontmatter,
 )
 
-DATA_DIR = Path("~/.claude/mindvault-v3").expanduser()
+# v3.2.7: production state pollution 방지. MV3_DATA_DIR env var 우선.
+DATA_DIR = Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
 DEBUG_LOG = DATA_DIR / "debug.log"
 
 

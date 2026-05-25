@@ -13,6 +13,7 @@ vec 저장은 BLOB(float32 bytes)이므로 전체 row 로드 후 numpy cosine.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -31,8 +32,10 @@ def embed_text(query: str) -> list[float] | None:
     """쿼리 임베딩 wrapper — Arctic-ko 학습 설정상 "query: " prefix 자동 부착."""
     return _embed_text_base(query, kind="query")
 
-DB_PATH = Path("~/.claude/mindvault-v3/index.db").expanduser()
-DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
+# v3.2.7: production state pollution 방지. MV3_DATA_DIR env var 우선.
+_MV3_DATA_DIR = Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
+DB_PATH = _MV3_DATA_DIR / "index.db"
+DEBUG_LOG = _MV3_DATA_DIR / "debug.log"
 RRF_K = 60
 DESCRIPTION_WEIGHT = 1.5
 DEFAULT_TOP_K = 1  # 보수적: 절대 우수한 1건만. V1 토큰 낭비 회피.
@@ -113,7 +116,7 @@ def normalize_scores(combined: dict[str, dict]) -> None:
 # 검색 시 latency 0 lookup — JSON 파일 read + 토큰 set 교집합.
 _ALIAS_INDEX_CACHE: dict | None = None
 _ALIAS_INDEX_MTIME: float = 0.0
-ALIAS_INDEX_PATH = Path("~/.claude/mindvault-v3/alias_index.json").expanduser()
+ALIAS_INDEX_PATH = _MV3_DATA_DIR / "alias_index.json"
 ALIAS_BOOST_TOKEN_MIN = 2  # 1자 토큰은 false positive 위험 (한국어 "안","함")
 
 

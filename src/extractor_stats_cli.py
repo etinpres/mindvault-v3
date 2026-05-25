@@ -24,8 +24,11 @@ from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
-DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
 import os as _os_stats
+
+# v3.2.7: production state pollution 방지. MV3_DATA_DIR env var 우선.
+_MV3_DATA_DIR = Path(_os_stats.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
+DEBUG_LOG = _MV3_DATA_DIR / "debug.log"
 
 
 def _default_projects_dir() -> Path:
@@ -33,7 +36,7 @@ def _default_projects_dir() -> Path:
     if override:
         return Path(override).expanduser()
     home_slug = "-" + str(Path.home()).strip("/").replace("/", "-")
-    return Path("~/.claude/projects").expanduser() / home_slug
+    return Path(_os_stats.environ.get("MV3_PROJECTS_ROOT", "~/.claude/projects")).expanduser() / home_slug
 
 
 _PROJECTS_DIR = _default_projects_dir()
@@ -46,7 +49,8 @@ if (_HOOK_DIR / "memory_extractor.py").is_file():
     if str(_HOOK_DIR) not in sys.path:
         sys.path.insert(0, str(_HOOK_DIR))
 else:
-    PROD = Path("~/.claude/scripts/mindvault").expanduser()
+    # v3.2.7: MV3_SCRIPTS_DIR env var 우선.
+    PROD = Path(_os_stats.environ.get("MV3_SCRIPTS_DIR", "~/.claude/scripts/mindvault")).expanduser()
     if str(PROD) not in sys.path:
         sys.path.insert(0, str(PROD))
 

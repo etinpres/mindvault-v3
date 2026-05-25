@@ -30,9 +30,11 @@ def _default_projects_dir() -> Path:
     if override:
         return Path(override).expanduser()
     home_slug = "-" + str(Path.home()).strip("/").replace("/", "-")
-    return Path("~/.claude/projects").expanduser() / home_slug
+    return Path(os.environ.get("MV3_PROJECTS_ROOT", "~/.claude/projects")).expanduser() / home_slug
 
 
+# v3.2.7: production state pollution 방지. MV3_DATA_DIR env var 우선.
+_MV3_DATA_DIR = Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
 PROJECTS_DIR = _default_projects_dir()
 MEMORY_DIR = PROJECTS_DIR / "memory"
 STAGED_DIR = MEMORY_DIR / "_staged"
@@ -42,7 +44,7 @@ PROCEDURAL_DIR = MEMORY_DIR / "_procedural"
 PROCEDURAL_STAGED_DIR = PROCEDURAL_DIR / "_staged"
 STAGED_DIRS = (STAGED_DIR, PROCEDURAL_STAGED_DIR)
 INDEX_MD = MEMORY_DIR / "MEMORY.md"
-DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
+DEBUG_LOG = _MV3_DATA_DIR / "debug.log"
 STAGED_TTL_DAYS = 30
 
 # Sprint NEXT-5 — ANSI 색상 diff 출력. 사용자가 매 update 검토 시 +/- 식별 비용 ↓.

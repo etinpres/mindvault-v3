@@ -14,7 +14,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DATA_DIR = Path("~/.claude/mindvault-v3").expanduser()
+# v3.2.7: production state pollution 방지. MV3_DATA_DIR env var 우선.
+DATA_DIR = Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
 DEBUG_LOG = DATA_DIR / "debug.log"
 GEMMA_URL = "http://localhost:8080/v1/chat/completions"
 GEMMA_MODEL = "mlx-community/gemma-4-e4b-it-4bit"

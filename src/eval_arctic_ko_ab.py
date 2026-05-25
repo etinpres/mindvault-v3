@@ -38,7 +38,9 @@ import numpy as np
 
 # 경로 — Claude Code 가 cwd 마다 생성하는 모든 projects 슬롯의 memory 디렉토리.
 def _discover_memory_dirs() -> list[Path]:
-    root = Path("~/.claude/projects").expanduser()
+    # v3.2.7: env var 우선 — production state pollution 방지 패턴.
+    import os as _os
+    root = Path(_os.environ.get("MV3_PROJECTS_ROOT", "~/.claude/projects")).expanduser()
     if not root.is_dir():
         return []
     return sorted(p for p in root.glob("*/memory") if p.is_dir())

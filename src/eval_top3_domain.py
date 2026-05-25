@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -19,7 +20,8 @@ from indexer import extract_head_turns_body  # noqa: E402
 from search import recall, _embed_query, vec_candidates, fts_candidates  # noqa: E402
 import sqlite3  # noqa: E402
 
-DB_PATH = Path("~/.claude/mindvault-v3/index.db").expanduser()
+# v3.2.7: production state pollution 방지. MV3_DATA_DIR env var 우선.
+DB_PATH = Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser() / "index.db"
 
 # RELEVANT 쿼리 — 사용자가 실제로 작업한 도메인. 한 줄 쿼리는 사용자가 회수하려는
 # 의도를 모방. 도메인이 너무 좁으면 매칭 어려워 의도가 잘 드러나는 한 줄.

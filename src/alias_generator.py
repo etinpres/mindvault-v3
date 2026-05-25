@@ -33,7 +33,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DATA_DIR = Path("~/.claude/mindvault-v3").expanduser()
+# v3.2.7: production state pollution 방지. MV3_DATA_DIR env var 우선.
+DATA_DIR = Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
 INDEX_PATH = DATA_DIR / "alias_index.json"
 DEBUG_LOG = DATA_DIR / "debug.log"
 
@@ -71,7 +72,7 @@ CLAUDE_SCHEMA = {
 # 이 alias 에도 재발 — cwd 별 projects 디렉토리가 자동 생성되므로 (Sprint 6) 모든
 # slot 을 런타임에 자동 발견. .md 가 있는 활성 슬롯만 흡수.
 # 환경변수 MV3_EXTRA_MEMORY_DIRS (콜론 구분) 로 명시 override 가능.
-PROJECTS_ROOT = Path("~/.claude/projects").expanduser()
+PROJECTS_ROOT = Path(os.environ.get("MV3_PROJECTS_ROOT", "~/.claude/projects")).expanduser()
 
 
 def discover_memory_dirs() -> list[Path]:

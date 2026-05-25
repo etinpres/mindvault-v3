@@ -22,9 +22,11 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-PROJECTS_ROOT = Path("~/.claude/projects").expanduser()
-DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
-HOOK = Path("~/.claude/hooks/session-memory-end.py").expanduser()
+# v3.2.7: production state pollution 방지. MV3_DATA_DIR / MV3_PROJECTS_ROOT / MV3_HOOKS_DIR env var 우선.
+_MV3_DATA_DIR = Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
+PROJECTS_ROOT = Path(os.environ.get("MV3_PROJECTS_ROOT", "~/.claude/projects")).expanduser()
+DEBUG_LOG = _MV3_DATA_DIR / "debug.log"
+HOOK = Path(os.environ.get("MV3_HOOKS_DIR", "~/.claude/hooks")).expanduser() / "session-memory-end.py"
 
 # debug.log 라인 형식: [2026-05-24 09:54:41] session-end: jsonl missing for 949a8635
 MISSING_RE = re.compile(

@@ -20,7 +20,8 @@ import os
 import sys
 from pathlib import Path
 
-DATA_DIR = Path("~/.claude/mindvault-v3").expanduser()
+# v3.2.7: production state pollution 방지. MV3_DATA_DIR env var 우선.
+DATA_DIR = Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
 CONFIG_PATH = DATA_DIR / "sources.json"
 
 

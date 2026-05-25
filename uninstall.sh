@@ -8,6 +8,8 @@ set -euo pipefail
 HOOKS_DIR="$HOME/.claude/hooks"
 SETTINGS="$HOME/.claude/settings.json"
 INSTALL_MANIFEST="$HOME/.claude/mindvault-v3/.install-manifest"
+# v3.2.7: install 중단 시 남는 .tmp manifest 정리 대상.
+INSTALL_MANIFEST_TMP="$HOME/.claude/mindvault-v3/.install-manifest.tmp"
 
 # v3.2.0 — Gemma plist + cache 정리.
 # launchd 에서 com.mindvault.gemma-mlx 만 정리 (다른 사용자 이름의 gemma-mlx
@@ -218,6 +220,10 @@ remove_gemma_assets
 if [ -f "$INSTALL_MANIFEST" ]; then
   rm -f "$INSTALL_MANIFEST"
   echo "✓ removed $INSTALL_MANIFEST"
+fi
+# v3.2.7: 중단된 install 이 남긴 .tmp manifest 도 정리.
+if [ -f "$INSTALL_MANIFEST_TMP" ]; then
+  rm -f "$INSTALL_MANIFEST_TMP"
 fi
 
 # --- 7. Optional: drop memories_* tables (--purge-vec) --------------------

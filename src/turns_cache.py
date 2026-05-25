@@ -15,6 +15,7 @@ opt-in: self_eval 이 --use-cache 플래그 줄 때만 사용. 기존 직접 par
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -28,8 +29,10 @@ from self_eval import (  # noqa: E402
     load_turns,
 )
 
-CACHE_DB = Path("~/.claude/mindvault-v3/turns_cache.db").expanduser()
-DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
+# v3.2.7: production state pollution 방지. MV3_DATA_DIR env var 우선.
+_MV3_DATA_DIR = Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
+CACHE_DB = _MV3_DATA_DIR / "turns_cache.db"
+DEBUG_LOG = _MV3_DATA_DIR / "debug.log"
 
 
 def _debug(msg: str) -> None:

@@ -13,7 +13,9 @@ import time
 import traceback
 from pathlib import Path
 
-PROJECTS_ROOT = Path("~/.claude/projects").expanduser()
+# v3.2.7: production state pollution 방지. MV3_PROJECTS_ROOT env var 우선.
+import os as _os_paths
+PROJECTS_ROOT = Path(_os_paths.environ.get("MV3_PROJECTS_ROOT", "~/.claude/projects")).expanduser()
 # Sprint 6: 멀티 디렉토리 스캔. Claude Code 가 cwd 마다 별도 projects 슬롯을
 # 자동 생성하므로 (예: cwd=`/Users/<user>` → `-Users-<user>`, cwd=`/Users/<user>/foo`
 # → `-Users-<user>-foo`) 모든 하위 디렉토리의 *.jsonl 을 흡수한다. 빈 디렉토리는
@@ -37,7 +39,7 @@ def iter_jsonl_paths(root: Path = PROJECTS_ROOT):
         return
     for p in root.glob("*/*.jsonl"):
         yield p
-DATA_DIR = Path("~/.claude/mindvault-v3").expanduser()
+DATA_DIR = Path(_os_paths.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
 DB_PATH = DATA_DIR / "index.db"
 DEBUG_LOG = DATA_DIR / "debug.log"
 SIGNATURE = "# 지난 세션 요약 (MindVault v3)"

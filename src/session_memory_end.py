@@ -26,7 +26,8 @@ if (_HOOK_DIR / "memory_extractor.py").is_file():
     if str(_HOOK_DIR) not in sys.path:
         sys.path.insert(0, str(_HOOK_DIR))
 else:
-    _PROD = Path("~/.claude/scripts/mindvault").expanduser()
+    # v3.2.7: MV3_SCRIPTS_DIR env var 우선.
+    _PROD = Path(os.environ.get("MV3_SCRIPTS_DIR", "~/.claude/scripts/mindvault")).expanduser()
     if _PROD.is_dir() and str(_PROD) not in sys.path:
         sys.path.insert(0, str(_PROD))
 
@@ -44,7 +45,10 @@ os.environ.setdefault("MV3_EXTRACTOR_ALWAYS_FIRE", "1")
 
 from memory_extractor import extract_from_jsonl  # type: ignore  # noqa: E402
 
-PROJECTS_ROOT = Path("~/.claude/projects").expanduser()
+# v3.2.7: production state pollution 방지. MV3_DATA_DIR / MV3_PROJECTS_ROOT
+# env var 가 set 됐으면 우선 (테스트 conftest 가 tmp 로 강제). default 는 production.
+_MV3_DATA_DIR = Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
+PROJECTS_ROOT = Path(os.environ.get("MV3_PROJECTS_ROOT", "~/.claude/projects")).expanduser()
 # memory 저장 base 는 현재 사용자 $HOME 에서 파생된 Claude Code 프로젝트 슬롯
 # (단일 원천 of truth). 예: HOME=/Users/alice → 슬러그 `-Users-alice`.
 # `MV3_PROJECTS_DIR` 환경변수로 override 가능. jsonl 탐색은 PROJECTS_ROOT 의 모든
@@ -65,7 +69,7 @@ STAGED_DIR = MEMORY_DIR / "_staged"
 # 양쪽 staged 모두 스캔.
 PROCEDURAL_DIR = MEMORY_DIR / "_procedural"
 PROCEDURAL_STAGED_DIR = PROCEDURAL_DIR / "_staged"
-DEBUG_LOG = Path("~/.claude/mindvault-v3/debug.log").expanduser()
+DEBUG_LOG = _MV3_DATA_DIR / "debug.log"
 
 
 def staged_dir_for(memory_type: str) -> Path:
