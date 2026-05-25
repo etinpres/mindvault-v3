@@ -2,7 +2,7 @@
 
 > Claude Code의 영구 기억 시스템. 4-layer 파이프라인으로 세션 요약 자동 주입 · 자연어 검색 · Memory Compiler · 자동 회수까지.
 
-**v3.1.2** · Karpathy LLM-as-Compiler 패턴 실증 · macOS · MIT license · 340 passed
+**v3.1.3** · Karpathy LLM-as-Compiler 패턴 실증 · macOS · MIT license · 340 passed
 
 ---
 
@@ -63,12 +63,12 @@ MindVault v3는 그 망각의 빈 자리를 세 축으로 메웁니다:
 | NEXT-8 | PROJECTS_ROOT fix (dogfooding gap 해소, LLM-as-Compiler 첫 실증) | ✅ |
 | NEXT-10~20 | ACK trigger · backfill · always-fire · cache · stats CLI · launchd 영구화 | ✅ |
 
-**실측 (v3.1.2, 2026-05-25 재측)**: **340 passed + 13 subtests** (회귀 0). false positive 0.0%, internal effort 0.60, **hook 실효 hit rate picked>0 = 66.3%** (n=3,193, 2026-05-23~25). 자기충족 메모리 탐지 8건, extractor nonzero rate 20% → 47%.
+**실측 (v3.1.2/v3.1.3 carry-forward, 2026-05-25 재측)**: **340 passed + 13 subtests** (회귀 0). false positive 0.0%, internal effort 0.60, **hook 실효 hit rate picked>0 = 66.3%** (n=3,193, 2026-05-23~25). 자기충족 메모리 탐지 8건, extractor nonzero rate 20% → 47%. v3.1.3 fix 는 본문 안내·robustness 만이라 측정 그대로 적용.
 
 **Latency** (n=3,193): **p50=40ms, p95=400ms, p99=471ms**. timeout(≥400ms) skip ~6%. v3.0.x post-ship perf 회귀 (avg 452ms) 는 해소 (NEXT-27/28 fix + alias_index/intent cache 운영 누적).
 
 > 옛 표기 추적:
-> - "295 passed" (v3.0.0) → "307" (v3.0.1) → "311" (v3.0.2) → "327" (v3.1.0) → "340" (v3.1.1/v3.1.2)
+> - "295 passed" (v3.0.0) → "307" (v3.0.1) → "311" (v3.0.2) → "327" (v3.1.0) → "340" (v3.1.1/v3.1.2/v3.1.3)
 > - "hit rate 2.6%" (measurement artifact) → "55.7%" (v3.0.2 audit 시점) → **"66.3%"** (현재)
 > - "avg 452ms" (NEXT-27 이전) → **"p50=40ms"** (현재)
 
