@@ -1,5 +1,6 @@
 """Sprint 4 Task 7 — install/uninstall settings.json 변형 검증."""
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -287,6 +288,41 @@ class TestV3_1_1PostShipFixes(unittest.TestCase):
         """codex round-6 F 가드 — cs.md 가 stale content 가능성 안내."""
         body = (self.repo / "skill" / "cs.md").read_text()
         self.assertIn("stale", body, "stale content 경고 누락")
+
+
+class TestUninstallV320(unittest.TestCase):
+    """v3.2.0 — Gemma plist + cache 정리 (com.mindvault.gemma-mlx)."""
+
+    REPO_DIR = Path(__file__).resolve().parents[1]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.launch_agents = Path(self.tmp.name) / "LaunchAgents"
+        self.launch_agents.mkdir()
+        self.cache = Path(self.tmp.name) / "mv3-gemma"
+        self.cache.mkdir()
+        (self.cache / ".mv3-step").write_text("deps-ok\n")
+        self.plist = self.launch_agents / "com.mindvault.gemma-mlx.plist"
+        self.plist.write_text("<plist/>")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_removes_gemma_plist_and_cache(self):
+        env = os.environ.copy()
+        env.update({
+            "MV3_LAUNCH_AGENTS": str(self.launch_agents),
+            "MV3_GEMMA_CACHE": str(self.cache),
+            "MV3_UNINSTALL_GEMMA_ONLY": "1",
+            "MV3_UNINSTALL_DRY_LAUNCHCTL": "1",
+        })
+        r = subprocess.run(
+            ["bash", str(self.REPO_DIR / "uninstall.sh")],
+            capture_output=True, env=env,
+        )
+        self.assertEqual(r.returncode, 0, msg=r.stderr.decode())
+        self.assertFalse(self.plist.exists())
+        self.assertFalse(self.cache.exists())
 
 
 if __name__ == "__main__":

@@ -6,6 +6,33 @@ set -euo pipefail
 HOOKS_DIR="$HOME/.claude/hooks"
 SETTINGS="$HOME/.claude/settings.json"
 
+# v3.2.0 — Gemma plist + cache 정리.
+# launchd 에서 com.mindvault.gemma-mlx 만 정리 (다른 사용자 이름의 gemma-mlx
+# 서비스는 보존 — 그건 사용자 자체 관리).
+GEMMA_LAUNCH_AGENTS="${MV3_LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}"
+GEMMA_PLIST="$GEMMA_LAUNCH_AGENTS/com.mindvault.gemma-mlx.plist"
+GEMMA_CACHE="${MV3_GEMMA_CACHE:-$HOME/.cache/mv3-gemma}"
+
+remove_gemma_assets() {
+  if [ -f "$GEMMA_PLIST" ]; then
+    if [ "${MV3_UNINSTALL_DRY_LAUNCHCTL:-0}" != "1" ]; then
+      launchctl unload "$GEMMA_PLIST" 2>/dev/null || true
+    fi
+    rm -f "$GEMMA_PLIST"
+    echo "✓ removed Gemma plist ($GEMMA_PLIST)"
+  fi
+  if [ -d "$GEMMA_CACHE" ]; then
+    rm -rf "$GEMMA_CACHE"
+    echo "✓ removed Gemma cache ($GEMMA_CACHE)"
+  fi
+}
+
+# test 격리: MV3_UNINSTALL_GEMMA_ONLY=1 → Gemma 부분만 처리하고 exit.
+if [ "${MV3_UNINSTALL_GEMMA_ONLY:-0}" = "1" ]; then
+  remove_gemma_assets
+  exit 0
+fi
+
 # Hook scripts targeted for removal. Matched as substring anywhere in the
 # settings.json hook command (covers Stop / SessionEnd async variants too).
 HOOK_TARGETS=(
@@ -116,6 +143,11 @@ for label in "${LAUNCHD_LABELS[@]}"; do
   fi
 done
 
+# --- 5b. v3.2.0 Gemma plist + cache ---------------------------------------
+# v3.2.0 가 새로 도입한 com.mindvault.gemma-mlx 만 정리.
+# 다른 사용자 이름의 gemma-mlx (예: com.<user>.gemma-mlx) 는 보존.
+remove_gemma_assets
+
 # --- 6. Optional: drop memories_* tables (--purge-vec) --------------------
 if [ "${1:-}" = "--purge-vec" ]; then
   if [ -f "$HOME/.claude/mindvault-v3/index.db" ]; then
@@ -129,4 +161,4 @@ echo ""
 echo "Uninstall complete."
 echo "Cache + index preserved at $HOME/.claude/mindvault-v3/. Delete manually if desired."
 echo "Arctic-ko model preserved at $HOME/.cache/mlx-arctic-ko/ (~322MB). Delete manually if desired."
-echo "gemma-mlx launchd service preserved (shared infrastructure, not mindvault-owned)."
+echo "Other gemma-mlx launchd services (com.<user>.gemma-mlx 등) preserved — 본 uninstaller 는 com.mindvault.gemma-mlx 만 정리."
