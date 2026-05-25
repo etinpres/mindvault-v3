@@ -133,6 +133,23 @@ class TestConvertArcticKo(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertFalse((self.model_dir / "partial.bin").exists())
 
+    def test_real_path_missing_mlx_embeddings(self):
+        """MV3_CONVERT_DRY_RUN 미설정 + mlx_embeddings 막힘 시 exit 1 + 안내 메시지."""
+        env = os.environ.copy()
+        env.pop("MV3_CONVERT_DRY_RUN", None)
+        empty = Path(self.tmp.name) / "empty_pp"
+        empty.mkdir()
+        pkg = empty / "mlx_embeddings"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("raise ImportError('blocked by test')\n")
+        env["PYTHONPATH"] = str(empty)
+        r = subprocess.run(
+            [sys.executable, str(self.CONVERT_SCRIPT), "--target", str(self.model_dir)],
+            capture_output=True, env=env,
+        )
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(b"mlx_embeddings", r.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
