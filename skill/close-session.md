@@ -8,6 +8,15 @@ allowed-tools:
   - Bash
   - Glob
   - Grep
+triggers:
+  - close session
+  - close-session
+  - close day
+  - close-day
+  - 세션 종료
+  - 작업 종료
+  - 오늘 작업 정리
+  - 메모리 반영
 ---
 
 사용자가 `/close-session` (또는 alias `/cs`) 를 호출했다. SessionEnd hook의 자동 Memory Compiler (Gemma 기반) 가 procedural 사실은 잘 추출하지만, **narrative project memory** (왜 그렇게 결정했는지, 여러 단계의 맥락 종합) 는 약하다. 이 skill 은 컨텍스트 살아있는 메인 Claude 가 직접 회고해 그 갭을 메운다.
@@ -135,8 +144,10 @@ TODAY=$(date +%Y-%m-%d)
 각 항목별로:
 
 ```bash
-# 5 type 모두 검색 (procedural 포함)
-matches=$(grep -l "$KEYWORD" "$MEM_DIR"/{project,feedback,user,reference,procedural}_*.md 2>/dev/null)
+# 5 type 모두 검색 (procedural 포함).
+# -F (fixed string) 필수 — KEYWORD 가 regex metachar (`.`, `*`, `[`, `?` 등) 포함 시
+# 정규식으로 잘못 해석되는 silent mismatch 차단. 한국어 키워드도 일관 처리.
+matches=$(grep -lF "$KEYWORD" "$MEM_DIR"/{project,feedback,user,reference,procedural}_*.md 2>/dev/null)
 ```
 
 - 매칭 1건 → 해당 파일 끝에 `[YYYY-MM-DD] <요약>` append (bold 없음)
@@ -217,12 +228,16 @@ How to apply: <앞으로 어떤 상황에서 활용할지>
 
 ```bash
 LOCK_FILE="$MEM_DIR/.close-session.lock"
-exec 9>"$LOCK_FILE"
-flock -x -w 30 9 || { echo "lock acquire failed (30s timeout) — 다른 writer 활동 중"; exit 1; }
+# fd 200: parent shell 점유 충돌 가능성을 극소화한 명시 high fd.
+# 옛 fd 9 는 shell 일부 환경에서 special-use 또는 parent 점유 가능 — 200+ 는 충돌 사실상 0.
+# bash 4.1+ `{var}>` 동적 fd 할당은 macOS 기본 bash 3.2 호환 안 되어 미사용 (검증: 2026-05-25).
+exec 200>"$LOCK_FILE"
+flock -x -w 30 200 || { echo "lock acquire failed (30s timeout) — 다른 writer 활동 중"; exit 1; }
 # … 이 안에서 신규 파일 작성, MEMORY.md append 등 모든 write 수행 …
-# fd 9 가 닫히면 lock 자동 해제 (process 종료 또는 명시 exec 9>&-)
-# write 완료 후 lock 파일 자체 정리 (stale 누적 방지)
-trap 'exec 9>&-; rm -f "$LOCK_FILE"' EXIT
+# process 종료 시 fd 자동 닫힘 → lock 자동 해제. trap 은 lock 파일만 정리 (stale 누적 방지).
+# 의존성 주의: `flock` 은 macOS 기본 미포함 (brew install flock 필요). 미존재 시 §7 전체
+# 가드 skip 되고 Edit/Write race-detect (§7 차선) 로 fall through.
+trap 'rm -f "$LOCK_FILE"' EXIT
 ```
 
 신규 토픽 파일 생성도 **atomic rename + race detect** 패턴:
