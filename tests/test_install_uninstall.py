@@ -526,5 +526,53 @@ class TestV3_2_3FixSweep(unittest.TestCase):
                          "phantom subcommand 잔존")
 
 
+class TestV3_2_4PythonBinResolve(unittest.TestCase):
+    """v3.2.4 — wrapper PATH 와 install python3 mismatch 로 인한 mlx ImportError
+    fix. install.sh 가 자기 python3 의 bin dir 을 wrapper PATH 맨 앞에 prepend.
+
+    v3.2.3 의 #1 #6 fix (Python.framework 절대경로 박힘 제거) 가 도입한 fix-the-fix —
+    wrapper PATH 의 첫 매칭 python3 가 install.sh 의 pip --user 가 설치한 인터프리터
+    와 다를 경우 ImportError. install.sh 가 사용한 python3 의 dirname 을 명시 prepend.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.repo = Path(__file__).resolve().parent.parent
+
+    def test_wrappers_have_python_bin_placeholder(self):
+        """wrapper 본문에 __INSTALL_PYTHON_BIN__ placeholder 가 있어야 함."""
+        for name in ("arctic_ko_server_runner.sh", "gemma_server_runner.sh"):
+            body = (self.repo / "scripts" / name).read_text()
+            self.assertIn("__INSTALL_PYTHON_BIN__", body,
+                          f"{name}: placeholder 누락")
+            # PATH 맨 앞에 있는지 확인
+            for line in body.splitlines():
+                if line.startswith("export PATH="):
+                    self.assertIn('"__INSTALL_PYTHON_BIN__:', line,
+                                  f"{name}: placeholder 가 PATH 맨 앞 아님")
+                    break
+            else:
+                self.fail(f"{name}: 'export PATH=' 라인 부재")
+
+    def test_install_defines_deploy_runner(self):
+        """install.sh 가 deploy_runner 헬퍼 정의 + Python placeholder 치환."""
+        sh = (self.repo / "install.sh").read_text()
+        self.assertIn("deploy_runner()", sh, "deploy_runner 헬퍼 정의 누락")
+        self.assertIn("__INSTALL_PYTHON_BIN__", sh,
+                      "install.sh 안 placeholder 치환 로직 누락")
+        # 두 wrapper 다 deploy_runner 로 호출
+        self.assertIn('deploy_runner "$GEMMA_RUNNER_SRC"', sh,
+                      "Gemma runner deploy_runner 호출 누락")
+        self.assertIn('deploy_runner "$ARCTIC_RUNNER_SRC"', sh,
+                      "Arctic runner deploy_runner 호출 누락")
+
+    def test_deploy_runner_uses_command_v(self):
+        """deploy_runner 가 command -v python3 로 install python3 resolve."""
+        sh = (self.repo / "install.sh").read_text()
+        # dirname + command -v python3 패턴
+        self.assertIn('dirname "$(command -v python3)"', sh,
+                      "install python3 bin dir 자동 추출 패턴 누락")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -98,6 +98,43 @@ deploy_skill() {
   echo "  ✓ installed ${label} skill at $target"
 }
 
+# v3.2.4 — runner wrapper deploy (Python placeholder 치환).
+# install.sh 가 사용한 python3 의 bin dir 을 __INSTALL_PYTHON_BIN__ 치환.
+# wrapper PATH 첫 항목 = install python3 → launchd 환경에서 mlx 모듈 일치 보장.
+# (v3.2.3 의 wrapper PATH 가 install python3 와 다른 인터프리터 가리켜 ImportError
+# 발생했던 결함 fix.) deploy_plist 패턴 차용 — Python heredoc 으로 metachar 안전.
+deploy_runner() {
+  local src="$1" target="$2" label="${3:-$(basename "$target")}"
+  if [ ! -f "$src" ]; then
+    echo "  ✗ ${label}: source missing ($src)" >&2
+    return 1
+  fi
+  local pybin
+  pybin="$(dirname "$(command -v python3)")"
+  if [ -f "$target" ]; then
+    cp "$target" "$target.bak"
+  fi
+  if ! python3 - "$src" "$target" "$pybin" <<'PY'
+import os, sys
+src, target, pybin = sys.argv[1], sys.argv[2], sys.argv[3]
+content = open(src).read().replace("__INSTALL_PYTHON_BIN__", pybin)
+tmp = target + ".tmp"
+open(tmp, "w").write(content)
+os.replace(tmp, target)
+PY
+  then
+    if [ -f "$target.bak" ]; then
+      mv "$target.bak" "$target"
+      echo "  ✗ ${label}: template failed, restored from .bak" >&2
+    else
+      echo "  ✗ ${label}: template failed, no backup" >&2
+    fi
+    return 1
+  fi
+  rm -f "$target.bak"
+  chmod +x "$target"
+}
+
 # v3.2.3 — generic file deploy (executable). hook/wrapper/server script 용.
 # deploy_skill 과 동일 .bak 복원 패턴 + chmod +x.
 deploy_exec() {
@@ -274,7 +311,7 @@ else
     fi
     echo "plist-loaded" >> "$GEMMA_STEP_FILE"
   else
-    deploy_exec "$GEMMA_RUNNER_SRC" "$GEMMA_RUNNER_TARGET" "gemma_server_runner" || exit 1
+    deploy_runner "$GEMMA_RUNNER_SRC" "$GEMMA_RUNNER_TARGET" "gemma_server_runner" || exit 1
 
     if [ "${MV3_GEMMA_DRY_RUN:-0}" = "1" ]; then
       MV3_PLIST_SKIP_LAUNCHCTL=1 deploy_plist "$GEMMA_PLIST_SRC" "$GEMMA_PLIST_TARGET" "gemma plist" || exit 1
@@ -598,7 +635,7 @@ if [ -f "$ARCTIC_SERVER_SRC" ]; then
 fi
 # v3.2.3 (#1) — Arctic-ko runner wrapper deploy.
 if [ -f "$ARCTIC_RUNNER_SRC" ]; then
-  deploy_exec "$ARCTIC_RUNNER_SRC" "$ARCTIC_RUNNER_TARGET" "arctic_ko_server_runner" \
+  deploy_runner "$ARCTIC_RUNNER_SRC" "$ARCTIC_RUNNER_TARGET" "arctic_ko_server_runner" \
     || DEPLOY_FAILURES=$((DEPLOY_FAILURES+1))
   manifest_record "script" "$ARCTIC_RUNNER_TARGET"
 fi
