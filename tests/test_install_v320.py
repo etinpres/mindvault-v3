@@ -151,5 +151,70 @@ class TestConvertArcticKo(unittest.TestCase):
         self.assertIn(b"mlx_embeddings", r.stderr)
 
 
+class TestSprint45ArcticKoConvert(unittest.TestCase):
+    """Sprint 4.5 — 모델 부재 → install.sh 실행 → 모델 marker 생성 시나리오."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.target = Path(self.tmp.name) / "arctic"
+        self.step_file = Path(self.tmp.name) / ".mv3-step"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run_sprint45(self, env_extra=None):
+        env = os.environ.copy()
+        env.update({
+            "ARCH_OVERRIDE": "arm64",
+            "MV3_SPRINT45_ONLY": "1",
+            "MV3_ARCTIC_TARGET": str(self.target),
+            "MV3_ARCTIC_STEP_FILE": str(self.step_file),
+            "MV3_CONVERT_DRY_RUN": "1",
+        })
+        if env_extra:
+            env.update(env_extra)
+        return subprocess.run(
+            ["bash", str(INSTALL_SH)],
+            capture_output=True, env=env,
+        )
+
+    def test_clean_run_creates_marker(self):
+        """모델 없는 상태에서 4.5 실행 → marker 생성 + step 파일 4줄."""
+        r = self._run_sprint45()
+        self.assertEqual(r.returncode, 0, msg=r.stderr.decode())
+        self.assertTrue((self.target / "model.safetensors").exists())
+        steps = self.step_file.read_text().splitlines()
+        self.assertIn("deps-ok", steps)
+        self.assertIn("converted", steps)
+        self.assertIn("verified", steps)
+
+    def test_resume_from_downloaded(self):
+        """step 파일에 deps-ok + downloaded 있을 때 → converted/verified 만 실행."""
+        self.step_file.write_text("deps-ok\ndownloaded\n")
+        r = self._run_sprint45()
+        self.assertEqual(r.returncode, 0)
+        steps = self.step_file.read_text().splitlines()
+        self.assertEqual(steps.count("deps-ok"), 1)
+        self.assertEqual(steps.count("downloaded"), 1)
+        self.assertIn("converted", steps)
+
+    def test_fully_done_skips_all(self):
+        """모든 step 완료 + 모델 marker 있으면 4.5 가 noop."""
+        self.target.mkdir(parents=True)
+        (self.target / "model.safetensors").write_bytes(b"existing")
+        self.step_file.write_text("deps-ok\ndownloaded\nconverted\nverified\n")
+        r = self._run_sprint45()
+        self.assertEqual(r.returncode, 0)
+        self.assertGreaterEqual(r.stdout.decode().count("already done"), 4)
+
+    def test_convert_failure_no_step_recorded(self):
+        """MV3_CONVERT_FAIL 트리거 시 converted/verified step 미기록."""
+        self.step_file.write_text("deps-ok\ndownloaded\n")
+        r = self._run_sprint45(env_extra={"MV3_CONVERT_FAIL": "1"})
+        self.assertNotEqual(r.returncode, 0)
+        steps = self.step_file.read_text().splitlines()
+        self.assertNotIn("converted", steps)
+
+
 if __name__ == "__main__":
     unittest.main()

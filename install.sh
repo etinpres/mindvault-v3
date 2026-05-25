@@ -94,6 +94,32 @@ CLOSE_SESSION_SKILL_TARGET="$COMMANDS_DIR/close-session.md"
 CS_SKILL_SRC="$REPO_DIR/skill/cs.md"
 CS_SKILL_TARGET="$COMMANDS_DIR/cs.md"
 
+# ── Sprint 4.5 (v3.2.0) — Arctic-ko 4bit 자동 변환 ────────────────────────────
+# 옛 4.2 "수동 변환 안내" 블록을 대체. do_step checkpoint 로 4 단계 진행.
+# 위치: 다른 사이드이펙트(mkdir, cp, plist load) 전에 두어 MV3_SPRINT45_ONLY=1
+# 테스트가 빨리 exit 하도록.
+ARCTIC_TARGET="${MV3_ARCTIC_TARGET:-$HOME/.cache/mlx-arctic-ko}"
+ARCTIC_STEP_FILE="${MV3_ARCTIC_STEP_FILE:-$ARCTIC_TARGET/.mv3-step}"
+CONVERT_SCRIPT="$REPO_DIR/scripts/convert_arctic_ko.py"
+ARCTIC_MODEL_READY=0
+
+if [ "${MV3_SKIP_MODELS:-0}" = "1" ]; then
+  echo "→ Sprint 4.5 (Arctic-ko 모델 자동 변환) skip — non-arm64 또는 사용자 선택"
+else
+  echo ""
+  echo "── Sprint 4.5 — Arctic-ko 4bit 자동 변환 ─────────────────────────────────"
+  mkdir -p "$ARCTIC_TARGET"
+  do_step "deps-ok"    "$ARCTIC_STEP_FILE" "python3 -m pip install --user --quiet mlx_embeddings huggingface_hub" || exit 1
+  do_step "downloaded" "$ARCTIC_STEP_FILE" "python3 -c \"from huggingface_hub import snapshot_download; snapshot_download('dragonkue/snowflake-arctic-embed-l-v2.0-ko')\"" || exit 1
+  do_step "converted"  "$ARCTIC_STEP_FILE" "python3 '$CONVERT_SCRIPT' --target '$ARCTIC_TARGET'" || exit 1
+  do_step "verified"   "$ARCTIC_STEP_FILE" "[ -f '$ARCTIC_TARGET/model.safetensors' ]" || exit 1
+  ARCTIC_MODEL_READY=1
+fi
+
+if [ "${MV3_SPRINT45_ONLY:-0}" = "1" ]; then
+  exit 0
+fi
+
 if [ ! -f "$SRC" ]; then
   echo "error: $SRC not found" >&2
   exit 1
@@ -292,25 +318,8 @@ else
   echo "  (warning: dependency install had warnings — Sprint 4 may not work)"
 fi
 
-# 4.2 Arctic-ko MLX 4bit 모델 (수동 변환 필요)
-# Sprint 9: dragonkue/snowflake-arctic-embed-l-v2.0-ko 원본을 MLX 4bit 양자화한
-# 로컬 모델 사용. mlx-community에 4bit 양자화본 미존재 — 사용자 직접 변환 필요.
-ARCTIC_MODEL_READY=0
-if [ -f "$ARCTIC_MODEL_DIR/model.safetensors" ]; then
-  echo "✓ Arctic-ko model already present at $ARCTIC_MODEL_DIR"
-  ARCTIC_MODEL_READY=1
-else
-  echo ""
-  echo "  ⚠ Arctic-ko MLX 4bit 모델이 $ARCTIC_MODEL_DIR 에 없습니다."
-  echo "  수동 변환 절차 (1회만 필요):"
-  echo "    1) pip install --user mlx_embeddings huggingface_hub"
-  echo "    2) python3 -c \"from mlx_embeddings.utils import convert; convert('dragonkue/snowflake-arctic-embed-l-v2.0-ko', mlx_path='$ARCTIC_MODEL_DIR', quantize=True, q_bits=4)\""
-  echo "    3) ls $ARCTIC_MODEL_DIR/model.safetensors  # 확인"
-  echo "    4) 본 installer 재실행"
-  echo "  자세한 안내: README.md 의 'Arctic-ko 모델 변환' 섹션."
-  echo "  (모델 없으면 memory-recall hook 은 silent no-op)"
-  echo ""
-fi
+# 4.2 — Arctic-ko 모델 자동 변환은 위 Sprint 4.5 (v3.2.0) 가 처리.
+# (옛 수동 변환 안내 블록은 v3.2.0 에서 제거됨)
 
 # 4.3 스크립트 + 서버 배포
 for f in "${SPRINT4_SRC[@]}"; do
