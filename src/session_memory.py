@@ -182,17 +182,24 @@ def cache_get(key: str) -> str | None:
 def cache_set(key: str, value: str) -> None:
     # v3.2.6 Round 2 (LR1): atomic write — parallel SessionStart hook 이 동일
     # key 에 동시 write 시 partial 잔류 회피. tmp + os.replace 패턴.
+    # v3.2.8: finally — KeyboardInterrupt 도 tmp orphan 차단. tmp 정의를 try
+    # 밖으로 빼서 mkdir 실패 시 UnboundLocalError 회피.
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        target = CACHE_DIR / f"{key}.txt"
-        tmp = target.with_suffix(".txt.tmp")
+    except OSError as e:
+        _debug(f"cache_set mkdir failed: {e}")
+        return
+    target = CACHE_DIR / f"{key}.txt"
+    tmp = target.with_suffix(".txt.tmp")
+    try:
         tmp.write_text(value)
         os.replace(tmp, target)
     except OSError as e:
         _debug(f"cache_set failed: {e}")
+    finally:
         try:
             tmp.unlink(missing_ok=True)
-        except (OSError, UnboundLocalError):
+        except OSError:
             pass
 
 

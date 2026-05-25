@@ -51,6 +51,7 @@ def load_sources(config_path: Path | None = None) -> list[str]:
 def save_sources(srcs: list[str], config_path: Path | None = None) -> None:
     # v3.2.6 Round 2 (LR2): atomic write — sources.json 가 indexer/recall 의
     # 진입점이라 partial JSON 손상 시 색인 path 가 깨짐. tmp + os.replace.
+    # v3.2.8: finally — KeyboardInterrupt 도 tmp orphan 차단.
     config_path = _resolve_cfg(config_path)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = config_path.with_suffix(config_path.suffix + ".tmp")
@@ -58,12 +59,11 @@ def save_sources(srcs: list[str], config_path: Path | None = None) -> None:
     try:
         tmp.write_text(payload, encoding="utf-8")
         os.replace(tmp, config_path)
-    except OSError:
+    finally:
         try:
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
-        raise
 
 
 def cmd_list(config_path: Path | None = None) -> int:

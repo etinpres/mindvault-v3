@@ -22,21 +22,29 @@ import traceback
 from pathlib import Path
 
 
-def _default_projects_dir() -> Path:
-    """현재 사용자 $HOME 으로부터 Claude Code 프로젝트 슬롯 경로 파생.
-    `MV3_PROJECTS_DIR` 환경변수로 override 가능.
+def _default_memory_dir() -> Path:
+    """현재 사용자 $HOME 으로부터 Claude Code 프로젝트 슬롯의 memory/ 파생.
+
+    v3.2.8: env override 우선순위 — close-session.md skill 과 통일.
+    (1) `MV3_MEMORY_DIR` — skill 과 동일 변수, 이게 MEMORY_DIR 자체.
+    (2) `MV3_PROJECTS_DIR` — 슬롯 root, MEMORY_DIR = $/memory.
+    (3) home_slug default.
     """
-    override = os.environ.get("MV3_PROJECTS_DIR", "").strip()
-    if override:
-        return Path(override).expanduser()
+    mem_override = os.environ.get("MV3_MEMORY_DIR", "").strip()
+    if mem_override:
+        return Path(mem_override).expanduser()
+    proj_override = os.environ.get("MV3_PROJECTS_DIR", "").strip()
+    if proj_override:
+        return Path(proj_override).expanduser() / "memory"
     home_slug = "-" + str(Path.home()).strip("/").replace("/", "-")
-    return Path(os.environ.get("MV3_PROJECTS_ROOT", "~/.claude/projects")).expanduser() / home_slug
+    root = Path(os.environ.get("MV3_PROJECTS_ROOT", "~/.claude/projects")).expanduser()
+    return root / home_slug / "memory"
 
 
 # v3.2.7: production state pollution 방지. MV3_DATA_DIR env var 우선.
 _MV3_DATA_DIR = Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
-PROJECTS_DIR = _default_projects_dir()
-MEMORY_DIR = PROJECTS_DIR / "memory"
+MEMORY_DIR = _default_memory_dir()
+PROJECTS_DIR = MEMORY_DIR.parent
 STAGED_DIR = MEMORY_DIR / "_staged"
 # Sprint 13: procedural slot 분리. list/approve/reject/prune 모두 양쪽 staged
 # 디렉토리 스캔. promoted target 은 type 별로 분기 (procedural → PROCEDURAL_DIR).
@@ -324,6 +332,7 @@ def cmd_approve(filename: str) -> int:
                 bak = target.with_suffix(target.suffix + ".bak")
                 # v3.2.6 Round 3 NR3: atomic backup — overwrite 직전 partial .bak
                 # 잔류 시 향후 rollback 시도 실패. tmp + os.replace.
+                # v3.2.8: finally — KeyboardInterrupt 등 BaseException 도 tmp orphan 차단.
                 _bak_tmp = target.with_suffix(target.suffix + ".bak.tmp")
                 try:
                     _bak_tmp.write_text(
@@ -331,15 +340,16 @@ def cmd_approve(filename: str) -> int:
                     )
                     os.replace(_bak_tmp, bak)
                 except OSError as e:
-                    try:
-                        _bak_tmp.unlink(missing_ok=True)
-                    except OSError:
-                        pass
                     _debug(f"backup write fail {target}: {e}")
                     sys.stdout.write(json.dumps({
                         "ok": False, "error": f"backup fail: {e}",
                     }))
                     return 0
+                finally:
+                    try:
+                        _bak_tmp.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                 existing_meta, _ = parse_frontmatter(
                     target.read_text(encoding="utf-8")
                 )
@@ -354,16 +364,16 @@ def cmd_approve(filename: str) -> int:
                 # v3.2.6 Round 2 NR1: atomic write — approve 가 영구 메모리를
                 # overwrite 하는 critical path. partial 잔류 시 다음 hook recall
                 # 이 broken frontmatter parse 실패.
+                # v3.2.8: finally — KeyboardInterrupt 도 tmp orphan 차단.
                 _tmp = target.with_suffix(target.suffix + ".tmp")
                 try:
                     _tmp.write_text(final_fm, encoding="utf-8")
                     os.replace(_tmp, target)
-                except OSError:
+                finally:
                     try:
                         _tmp.unlink(missing_ok=True)
                     except OSError:
                         pass
-                    raise
                 src.unlink()
                 reindex_info: dict = {}
                 try:
@@ -397,16 +407,16 @@ def cmd_approve(filename: str) -> int:
             f"{body.rstrip()}\n"
         )
         # v3.2.6 Round 2 NR1: atomic write — 신규 promote 도 동일 패턴.
+        # v3.2.8: finally — KeyboardInterrupt 도 tmp orphan 차단.
         _tmp = target.with_suffix(target.suffix + ".tmp")
         try:
             _tmp.write_text(final_fm, encoding="utf-8")
             os.replace(_tmp, target)
-        except OSError:
+        finally:
             try:
                 _tmp.unlink(missing_ok=True)
             except OSError:
                 pass
-            raise
 
         if INDEX_MD.is_file():
             line = f"- [{meta.get('name', slug)}]({slug}.md) — {meta.get('reason', '')}\n"

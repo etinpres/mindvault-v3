@@ -19,16 +19,17 @@ MindVault v3 — Claude Code 세션 간 기억 유지 시스템. MindVault v1의
 
 - **Claude Code 내부에서만 작동** — 별도 서버, 별도 에이전트 없음
 - **사용자 행동 제로 전제** — 수동으로 문서 만들지 않아도 자동 수집
-- **Gemma 로컬 서버로 운영비 제로** — localhost:8080 MLX 서버 활용
+- **로컬 MLX 서버로 운영비 제로** — Gemma (요약) `localhost:8080` + Arctic-ko (임베딩) `localhost:8081`
 - **점진적 가치 약속** — "토큰 절약" 같은 드라마틱 약속 금지
 - **검증 쉬운 목표** — "새 세션에서 딴소리 안 하면 성공"
 
 ### 스택
 
 - Python (Claude Code 훅/스크립트 관례 따름)
-- SQLite FTS5 (벡터DB 대신 기본 풀텍스트 검색)
-- Gemma 4 E4B MLX (로컬 요약, `http://localhost:8080`, launchd 서비스 `com.yonghaekim.gemma-mlx`)
-- Claude Code 훅 시스템 (SessionStart)
+- SQLite FTS5 + sqlite-vec (풀텍스트 + 벡터 hybrid)
+- Gemma 4 E4B MLX (로컬 요약, `http://localhost:8080`, launchd `com.mindvault.gemma-mlx`)
+- Arctic-ko v2.0 MLX (한국어 임베딩 1024dim, `http://localhost:8081`, launchd `com.mindvault.arctic-ko-mlx`)
+- Claude Code 훅 시스템 (SessionStart / UserPromptSubmit / SessionEnd / Stop)
 
 ### 데이터 소스
 

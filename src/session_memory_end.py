@@ -51,18 +51,23 @@ _MV3_DATA_DIR = Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).e
 PROJECTS_ROOT = Path(os.environ.get("MV3_PROJECTS_ROOT", "~/.claude/projects")).expanduser()
 # memory 저장 base 는 현재 사용자 $HOME 에서 파생된 Claude Code 프로젝트 슬롯
 # (단일 원천 of truth). 예: HOME=/Users/alice → 슬러그 `-Users-alice`.
-# `MV3_PROJECTS_DIR` 환경변수로 override 가능. jsonl 탐색은 PROJECTS_ROOT 의 모든
-# 하위 슬롯에서 — Sprint 6 indexer 와 동일.
-def _default_projects_dir() -> Path:
-    override = os.environ.get("MV3_PROJECTS_DIR", "").strip()
-    if override:
-        return Path(override).expanduser()
+# v3.2.8: env override 우선순위 — close-session.md skill 과 같은 변수 인식해 slot
+# divergence 차단. (1) `MV3_MEMORY_DIR` — skill 과 동일 변수, 이게 MEMORY_DIR
+# 자체. (2) `MV3_PROJECTS_DIR` — 슬롯 root. (3) home_slug default.
+# jsonl 탐색은 PROJECTS_ROOT 의 모든 하위 슬롯에서 — Sprint 6 indexer 와 동일.
+def _default_memory_dir() -> Path:
+    mem_override = os.environ.get("MV3_MEMORY_DIR", "").strip()
+    if mem_override:
+        return Path(mem_override).expanduser()
+    proj_override = os.environ.get("MV3_PROJECTS_DIR", "").strip()
+    if proj_override:
+        return Path(proj_override).expanduser() / "memory"
     home_slug = "-" + str(Path.home()).strip("/").replace("/", "-")
-    return PROJECTS_ROOT / home_slug
+    return PROJECTS_ROOT / home_slug / "memory"
 
 
-PROJECTS_DIR = _default_projects_dir()
-MEMORY_DIR = PROJECTS_DIR / "memory"
+MEMORY_DIR = _default_memory_dir()
+PROJECTS_DIR = MEMORY_DIR.parent
 STAGED_DIR = MEMORY_DIR / "_staged"
 # Sprint 13: procedural type 후보는 _procedural/_staged/ 슬롯에 저장. 결정 메모리와
 # 분리해 indexer + grep·인벤토리 시 한눈에 구분 가능. memory_review_cli 가
@@ -133,18 +138,21 @@ def write_staged(
     # v3.2.6 H2: atomic write — tmp + os.replace 로 partial markdown 차단.
     # crash 직전 write_text 가 절반만 flush 되면 다음 /memory_review 가
     # broken frontmatter parse 에 실패. alias_generator 의 동일 패턴 따름.
+    # v3.2.8: finally — KeyboardInterrupt 도 tmp orphan 차단.
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     try:
-        tmp_path.write_text(frontmatter, encoding="utf-8")
-        os.replace(tmp_path, path)
-        return path
-    except OSError as e:
-        _debug(f"write fail {filename}: {e}")
+        try:
+            tmp_path.write_text(frontmatter, encoding="utf-8")
+            os.replace(tmp_path, path)
+            return path
+        except OSError as e:
+            _debug(f"write fail {filename}: {e}")
+            return None
+    finally:
         try:
             tmp_path.unlink(missing_ok=True)
         except OSError:
             pass
-        return None
 
 
 def _stage_with_conflict_resolution(

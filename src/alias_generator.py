@@ -386,11 +386,19 @@ def _save(data: dict) -> None:
     recall hook 의 load_alias_index() 가 동기적으로 읽는 도중 generate() 가
     write_text 중간에 crash 하면 부분 쓰인 파일이 JSONDecodeError 를 일으켜
     다음 SessionEnd 까지 alias boost 비활성. tmp 에 쓰고 atomic rename.
+
+    v3.2.8: try/finally — KeyboardInterrupt/SystemExit 도 tmp orphan 차단.
     """
     INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = INDEX_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
-    os.replace(tmp, INDEX_PATH)
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        os.replace(tmp, INDEX_PATH)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def load_alias_index() -> dict:
