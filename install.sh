@@ -4,6 +4,62 @@
 
 set -euo pipefail
 
+# v3.2.0 Task 1 — Apple Silicon 가드 + 헬퍼.
+# ARCH_OVERRIDE 환경변수는 테스트 전용 (tests/test_install_v320.py).
+_ARCH="${ARCH_OVERRIDE:-$(uname -m)}"
+_OS="$(uname -s)"
+if [ "$_ARCH" != "arm64" ] || [ "$_OS" != "Darwin" ]; then
+  echo "⚠ MindVault v3 의 MLX 백엔드는 Apple Silicon Mac 에서만 동작합니다."
+  echo "  현재 환경: $_OS $_ARCH"
+  echo "  Linux/Intel Mac 지원은 v3.3.0 (백엔드 추상화) 예정."
+  read -r -p "  계속 진행 시 모델 자동 설치(Sprint 4.5/17)는 건너뜁니다. 인프라만 설치하시겠습니까? [y/N] " _resp
+  if [ "${_resp:-N}" != "y" ] && [ "${_resp:-N}" != "Y" ]; then
+    echo "  설치 취소."
+    exit 1
+  fi
+  export MV3_SKIP_MODELS=1
+fi
+
+if [ "${MV3_GUARD_ONLY:-0}" = "1" ]; then
+  exit 0
+fi
+
+# v3.2.0 Task 1 — checkpoint 헬퍼.
+# do_step <name> <step_file> <action_command>
+do_step() {
+  local name="$1" step_file="$2" action="$3"
+  if grep -q "^${name}$" "$step_file" 2>/dev/null; then
+    echo "  ✓ ${name} (already done, skipping)"
+    return 0
+  fi
+  echo "→ ${name} ..."
+  if eval "$action"; then
+    mkdir -p "$(dirname "$step_file")"
+    echo "$name" >> "$step_file"
+    echo "  ✓ ${name}"
+    return 0
+  else
+    echo "  ✗ ${name} FAILED"
+    print_next_step "$name"
+    return 1
+  fi
+}
+
+print_next_step() {
+  case "$1" in
+    deps-ok)      echo "  Next: pip 환경 확인 (python3 -m pip --version) 후 ./install.sh 재실행" ;;
+    downloaded)   echo "  Next: 네트워크 확인 후 ./install.sh 재실행 (huggingface_hub 가 partial 캐시 자동 활용)" ;;
+    converted)    echo "  Next: 디스크 1.5GB 확보 후 ./install.sh 재실행" ;;
+    plist-loaded) echo "  Next: ls -la ~/Library/LaunchAgents/ 권한 확인 후 ./install.sh 재실행" ;;
+    healthy)      echo "  Next: tail ~/Library/Logs/{gemma,arctic-ko}-mlx.err 진단 후 ./install.sh 재실행" ;;
+    verified)     echo "  Next: ls ~/.cache/mlx-arctic-ko/model.safetensors 확인 후 ./install.sh 재실행" ;;
+  esac
+}
+
+if [ "${MV3_SOURCE_HELPERS_ONLY:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC="$REPO_DIR/src/session_memory.py"
 HOOKS_DIR="$HOME/.claude/hooks"
