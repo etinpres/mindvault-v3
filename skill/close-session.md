@@ -55,11 +55,16 @@ if [ -n "${MV3_MEMORY_DIR:-}" ]; then
   fi
 fi
 
-# 우선순위 2: 현재 cwd 슬러그 (Claude Code 가 실제 jsonl 을 쌓는 곳)
+# 우선순위 2: 현재 cwd 슬러그 (활성 슬롯일 때만 — `.md` ≥ 5 휴리스틱).
+# v3.1.0 첫 dogfood 에서 cwd-derived 슬롯이 1 .md 만 있는 비활성 인데 활성
+# 슬롯(40 .md)을 가려 잘못 매칭됐던 결함 fix. 비활성이면 priority 3 (mtime) 로 fall through.
 if [ -z "$MEM_DIR" ]; then
   CWD_SLUG=$(pwd | sed 's|/|-|g')
   CWD_MEM="$PROJECTS_ROOT/${CWD_SLUG}/memory"
-  [ -d "$CWD_MEM" ] && MEM_DIR="$CWD_MEM"
+  if [ -d "$CWD_MEM" ]; then
+    md_count=$(find "$CWD_MEM" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
+    [ "$md_count" -ge 5 ] && MEM_DIR="$CWD_MEM"
+  fi
 fi
 
 # 우선순위 3: 가장 최근 갱신된 MEMORY.md (NUL-separated, 공백·`:` path 안전)
@@ -94,8 +99,12 @@ TODAY=$(date +%Y-%m-%d)
 
 ### 2. 인자 파싱
 
-- `--dry-run` 이 인자에 있으면 `DRY_RUN=1`. 파일 수정 없이 작성 내용만 출력.
+슬래시 명령어의 인자는 메인 Claude 가 받은 `$ARGUMENTS` 또는 호출 prompt 의 trailing text 로 전달된다 (Claude Code skill 계약). 메인은 그 텍스트를 직접 검사:
+
+- `--dry-run` 토큰이 인자 텍스트 안에 있으면 (substring match, 대소문자 무시) `DRY_RUN=1`. 신규 파일·기존 append·MEMORY.md 갱신을 모두 **skip** 하고 작성 *될* 내용만 stdout 으로 출력.
 - 그 외 인자는 무시 (`/close-session 정리해줘` 같은 자연어 인자 허용, 단 처리는 동일).
+
+메인 Claude 검출 의무: 호출 prompt 에 `--dry-run` 이 없는데 silent real write 하면 사용자 의도 위반. 인자 안 보였으면 명시적으로 "DRY_RUN=0, 실제 파일 수정 진행" 한 줄 보고.
 
 ### 3. 이번 세션 회고 (메인 Claude 직접 수행)
 
@@ -106,6 +115,16 @@ TODAY=$(date +%Y-%m-%d)
 3. **user** — 사용자 자신의 역할·전문성·선호 신규 정보. 예: "전직 영어 교사"
 4. **reference** — 외부 시스템 단서 (URL, 계정, API 위치 등)
 5. **procedural** — 명령·command·휴리스틱·재사용 가능한 노하우. 예: "PRAGMA WAL 은 DB 파일 속성이라 1회 init 으로 충분"
+
+**tiebreaker** (한 사실이 여러 type 매칭 시) — 명확한 절대 우선순위:
+
+1. **reference** (외부 URL/계정/API 위치) — 다른 type 과 본질적으로 분리, 매칭 시 무조건 1순위
+2. **user** (사용자 자기 자신) — 가장 영구적, 사람 자체에 종속
+3. **feedback** (사용자 지침/선호) — 다른 세션에도 적용 규칙
+4. **procedural** (명령·휴리스틱·command) — 재사용 가능한 방법
+5. **project** (특정 작업 상태/결과) — 가장 휘발성
+
+같은 사실이 위 두 type 매칭 시 **숫자 작은 쪽 채택**. 결정 못 하면 의미적 핵심 동사 기준 — "결정했다" → project, "이렇게 해라" → feedback, "이렇게 작동한다" → procedural.
 
 각 항목 형식: `[YYYY-MM-DD] <한 줄 요약>` (bold 표기 없음).
 
@@ -122,7 +141,13 @@ matches=$(grep -l "$KEYWORD" "$MEM_DIR"/{project,feedback,user,reference,procedu
 
 - 매칭 1건 → 해당 파일 끝에 `[YYYY-MM-DD] <요약>` append (bold 없음)
 - 매칭 0건 → 신규 토픽 파일 생성. 네이밍: `<type>_<slug>.md`
-  - **slug sanitize 의무**: 정규식 `^[a-z][a-z0-9_-]{0,31}$` 통과만 허용. 경로 구분자(`/`, `\`), 상대경로(`..`), shell metachar 모두 차단. 사용자가 한국어/특수문자 슬러그 입력 시 메인 Claude 가 영문 kebab 으로 변환 후 검증.
+  - **slug sanitize 의무**: 정규식 `^[a-z][a-z0-9_-]{0,31}$` 통과만 허용. 경로 구분자(`/`, `\`), 상대경로(`..`), shell metachar 모두 차단.
+  - **slug 결정 우선순위** (consistency 보장):
+    1. **기존 메모리에 비슷한 주제가 있으면 그 slug 재사용** — `grep -l` 매칭 빈약해도 의미적으로 가까운 기존 파일 (예: `feedback_bg_session_worktree.md`) 있으면 그 파일에 append 로 다시 매칭 시도. 신규 slug 만들기 전 한 번 더 확인.
+    2. **한국어 → 영어 의미 번역** (메인 Claude 직접). 예: "메모리 회수 결함" → `memory-recall-defect`. LLM 번역 비결정성 인정 — slug 일관성 위해 1단계가 우선.
+    3. 모든 non-ASCII 와 shell metachar 는 drop (음역 X — 의미 안 통하면 noise).
+    4. lowercase + 단어 사이 `-` 또는 `_` (기존 메모리 파일 convention 따름).
+    5. 최종 정규식 통과 못 하면 사용자에게 영문 slug 직접 입력 요청.
   - type 도 화이트리스트 5개(`user|feedback|project|reference|procedural`) 외 거부.
   - 최종 경로는 `realpath` 로 `$MEM_DIR` 하위인지 확인 후 쓰기 (traversal 방어 in-depth).
 - 매칭 2건 이상 → 사용자에게 한 줄로 어느 파일에 넣을지 선택 요청. 인터랙티브 불가 환경에서는 가장 최근 mtime 파일에 default append + 사용자에게 알림
@@ -173,7 +198,22 @@ How to apply: <앞으로 어떤 상황에서 활용할지>
 
 ### 7. 동시성 가드 (file lock)
 
-`/close-session` 실행 중 SessionEnd hook 의 자동 Memory Compiler 가 같은 `$MEM_DIR` 에 동시 쓰기 할 수 있다 (race → interleave 또는 lost update). 모든 write 전 lock 획득:
+**주의**: 이 lock 은 **bash subshell 안의 write** (예: `echo ... >> file`, `mv tmp target`) 만 보호한다. 메인 Claude 가 `Edit` / `Write` tool 로 파일을 수정할 때는 lock 우회 — Claude Code 도구 호출이 bash 를 거치지 않기 때문. 따라서:
+
+- **권장**: 메모리 파일 생성·갱신은 `Bash` 도구로 lock 내부에서 처리 (heredoc/printf 후 atomic rename). `Edit`/`Write` 는 사용자 인터랙티브 edit 단계에서만.
+- **차선** (Edit/Write 사용 시 race 검출):
+  ```bash
+  # §1 MEM_DIR 결정 직후 mtime 기록
+  INITIAL_MTIME=$(stat -f '%m' "$MEM_DIR/MEMORY.md" 2>/dev/null || echo 0)
+  # ... 메인 Claude 가 Edit/Write 로 갱신 후 ...
+  # §8 인덱스 갱신 직전 다시 확인
+  CURRENT_MTIME=$(stat -f '%m' "$MEM_DIR/MEMORY.md" 2>/dev/null || echo 0)
+  if [ "$CURRENT_MTIME" != "$INITIAL_MTIME" ]; then
+    echo "⚠️  MEMORY.md 가 close-session 진행 중 다른 writer 에 의해 변경됨 ($INITIAL_MTIME → $CURRENT_MTIME). 사용자 확인 후 진행 권장." >&2
+  fi
+  ```
+
+`/close-session` 실행 중 SessionEnd hook 의 자동 Memory Compiler 가 같은 `$MEM_DIR` 에 동시 쓰기 할 수 있다 (race → interleave 또는 lost update). bash write 시 lock 획득:
 
 ```bash
 LOCK_FILE="$MEM_DIR/.close-session.lock"
@@ -245,6 +285,6 @@ MEMORY.md: M줄 (한계 200)
 
 ## 짝 스킬
 
-- `/recall <검색어>` — 과거 세션·메모리 풀텍스트 검색 (Layer 2+4 hybrid, 실측 200ms)
+- `/recall <검색어>` — 과거 세션·메모리 풀텍스트 검색 (Layer 2+4 hybrid, 실측 p50~40ms, p95~400ms)
 - `/memory_review` — Memory Compiler 가 자동 추출한 `_procedural/_staged/` 후보를 사용자가 검토·승인
 - 메모리 회수: UserPromptSubmit hook 이 자동 처리 (`~/.claude/CLAUDE.md "메모리 회수 (자동화됨)"` 참조). `/close-session` 은 그 반대 방향 — 세션 **종료** 시 명시 반영.

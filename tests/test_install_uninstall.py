@@ -208,5 +208,86 @@ class TestCloseSessionSkillDeploy(unittest.TestCase):
                       "PROJECTS_ROOT 자체 거부 가드 누락")
 
 
+class TestV3_1_1PostShipFixes(unittest.TestCase):
+    """v3.1.1 audit-2026-05-25 post-ship dogfood + codex round-5 fix 회귀 가드."""
+
+    def setUp(self):
+        self.repo = Path(__file__).resolve().parent.parent
+
+    def test_install_handles_personal_skill_conflict(self):
+        """CRITICAL #1 가드 — install.sh 가 옛 personal `~/.claude/skills/{cs,close-session}/`
+        디렉토리를 발견하면 sentinel 검사 후 백업."""
+        sh = (self.repo / "install.sh").read_text()
+        self.assertIn("skills/close-session", sh, "personal skill conflict 처리 누락")
+        self.assertIn("skills.attic", sh, "백업 디렉토리 패턴 누락")
+
+    def test_cwd_slot_activity_heuristic(self):
+        """HIGH #2 가드 — cwd 슬롯 priority 2 가 .md ≥ 5 휴리스틱 통과 시에만 채택."""
+        body = (self.repo / "skill" / "close-session.md").read_text()
+        self.assertIn("md_count", body, "활성 슬롯 휴리스틱 누락")
+        self.assertIn("-ge 5", body, ".md >= 5 게이트 누락")
+
+    def test_dry_run_arg_parsing_spec(self):
+        """HIGH #3 가드 — --dry-run 인자 surface 명세 추가."""
+        body = (self.repo / "skill" / "close-session.md").read_text()
+        self.assertIn("$ARGUMENTS", body, "args surface 명세 누락")
+        self.assertIn("DRY_RUN=1", body, "DRY_RUN flag 누락")
+
+    def test_flock_edit_tool_gap_documented(self):
+        """HIGH #4 가드 — flock vs Edit/Write tool gap 명시."""
+        body = (self.repo / "skill" / "close-session.md").read_text()
+        self.assertIn("bash subshell", body, "lock 범위 한계 명시 누락")
+
+    def test_korean_slug_conversion_rule(self):
+        """MED #5 가드 — 한국어 → kebab 변환 deterministic rule 명시."""
+        body = (self.repo / "skill" / "close-session.md").read_text()
+        self.assertIn("한국어 → 영어 의미 번역", body, "kebab 변환 rule 누락")
+
+    def test_cs_alias_path_fallback(self):
+        """MED #6 가드 — cs.md 가 tilde expansion fail 시 fallback path 명시."""
+        body = (self.repo / "skill" / "cs.md").read_text()
+        self.assertIn("$HOME", body, "absolute path fallback 누락")
+
+    def test_recall_latency_not_stale(self):
+        """LOW #8 가드 — /recall 메트릭이 갱신 (200ms → 40ms)."""
+        body = (self.repo / "skill" / "close-session.md").read_text()
+        self.assertNotIn("실측 200ms", body, "/recall 200ms 표기 잔존")
+        self.assertIn("p50~40ms", body, "/recall 최신 p50 표기 누락")
+
+    def test_type_tiebreaker_rule(self):
+        """LOW #9 가드 — 5 카테고리 tiebreaker rule 명시."""
+        body = (self.repo / "skill" / "close-session.md").read_text()
+        self.assertIn("tiebreaker", body, "type 결정 tiebreaker 누락")
+
+    def test_install_handles_corrupt_skill_dir(self):
+        """codex round-6 A 가드 — SKILL.md 부재 시 corrupt install 보존."""
+        sh = (self.repo / "install.sh").read_text()
+        self.assertIn("SKILL.md 없음", sh, "corrupt install guard 누락")
+        self.assertIn("[ ! -f \"$skill_md\" ]", sh, "SKILL.md 부재 검사 누락")
+
+    def test_install_backup_uses_pid_suffix(self):
+        """codex round-6 B 가드 — backup 디렉토리에 $$ PID 추가 (parallel collision 차단)."""
+        sh = (self.repo / "install.sh").read_text()
+        self.assertIn("mv3-skill-conflict-$(date", sh)
+        self.assertIn("-$$", sh, "PID suffix 누락 — 같은 초 parallel install collision")
+
+    def test_slug_reuse_existing_before_translation(self):
+        """codex round-6 D 가드 — slug 결정 시 기존 메모리 매칭 우선."""
+        body = (self.repo / "skill" / "close-session.md").read_text()
+        self.assertIn("기존 메모리에 비슷한 주제가 있으면 그 slug 재사용", body,
+                      "slug consistency 강화 누락")
+
+    def test_alt_mode_mtime_tracking_specified(self):
+        """codex round-6 E 가드 — Edit/Write alt mode 의 mtime tracking spec 명시."""
+        body = (self.repo / "skill" / "close-session.md").read_text()
+        self.assertIn("INITIAL_MTIME", body, "mtime tracking spec 누락")
+        self.assertIn("CURRENT_MTIME", body, "race 검출 비교 spec 누락")
+
+    def test_cs_warns_on_stale_content(self):
+        """codex round-6 F 가드 — cs.md 가 stale content 가능성 안내."""
+        body = (self.repo / "skill" / "cs.md").read_text()
+        self.assertIn("stale", body, "stale content 경고 누락")
+
+
 if __name__ == "__main__":
     unittest.main()

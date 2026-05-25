@@ -117,6 +117,29 @@ while [ $i -lt ${#SKILL_TRIPLES[@]} ]; do
   i=$((i+3))
 done
 
+# v3.1.1 (audit-2026-05-25 post-ship CRITICAL): 옛 personal SKILL 디렉토리
+# `~/.claude/skills/{close-session,cs}/` 가 새 deploy 본을 가릴 수 있음.
+# round-6 A,B 가드 추가: SKILL.md 부재 시 corrupt install 로 간주 → 보존,
+# backup 디렉토리에 PID 추가 (같은 초 parallel install collision 차단).
+PERSONAL_SKILLS_BACKUP="$HOME/.claude/skills.attic/mv3-skill-conflict-$(date +%Y%m%d-%H%M%S)-$$"
+for personal in "$HOME/.claude/skills/close-session" "$HOME/.claude/skills/cs"; do
+  if [ -d "$personal" ]; then
+    skill_md="$personal/SKILL.md"
+    if [ ! -f "$skill_md" ]; then
+      # round-6 A: SKILL.md 없는 corrupt/empty 디렉토리 — 사용자 의도 불명, 보존
+      echo "↷ $personal 는 SKILL.md 없음 (corrupt 가능) — 보존, 수동 정리 권장"
+    elif grep -qF '[mv3-skill]' "$skill_md" 2>/dev/null; then
+      # 이미 v3 deploy 본의 변형 — 그대로 두고 새 본이 commands/ 에서 작동
+      echo "↷ $personal 는 v3 변형 (sentinel ✓) — 보존, $CLOSE_SESSION_SKILL_TARGET 우선 매칭"
+    else
+      # 사용자 personal — 백업 후 제거
+      mkdir -p "$PERSONAL_SKILLS_BACKUP"
+      mv "$personal" "$PERSONAL_SKILLS_BACKUP/"
+      echo "⚠️  $personal 를 $PERSONAL_SKILLS_BACKUP/ 로 백업 (옛 personal SKILL 이 v3 본을 가리지 않도록)"
+    fi
+  fi
+done
+
 if [ ! -f "$SETTINGS" ]; then
   echo '{"hooks":{}}' > "$SETTINGS"
   echo "✓ created $SETTINGS"
