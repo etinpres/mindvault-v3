@@ -151,6 +151,31 @@ class TestConvertArcticKo(unittest.TestCase):
         self.assertIn(b"mlx_embeddings", r.stderr)
 
 
+class TestGemmaRunner(unittest.TestCase):
+    """scripts/gemma_server_runner.sh 가 mlx_lm.server 호출하는 명령 형식 검증."""
+
+    RUNNER = REPO_DIR / "scripts" / "gemma_server_runner.sh"
+
+    def test_dry_run_prints_expected_command(self):
+        """MV3_RUNNER_DRY_RUN=1 시 실제 실행 안 하고 명령 echo."""
+        env = os.environ.copy()
+        env["MV3_RUNNER_DRY_RUN"] = "1"
+        r = subprocess.run(
+            ["bash", str(self.RUNNER)],
+            capture_output=True, env=env,
+        )
+        self.assertEqual(r.returncode, 0)
+        out = r.stdout.decode()
+        self.assertIn("mlx_lm.server", out)
+        self.assertIn("mlx-community/gemma-4-e4b-it-4bit", out)
+        self.assertIn("127.0.0.1", out)
+        self.assertIn("8080", out)
+
+    def test_runner_exists_and_executable(self):
+        self.assertTrue(self.RUNNER.exists())
+        self.assertTrue(os.access(self.RUNNER, os.X_OK))
+
+
 class TestSprint45ArcticKoConvert(unittest.TestCase):
     """Sprint 4.5 — 모델 부재 → install.sh 실행 → 모델 marker 생성 시나리오."""
 
