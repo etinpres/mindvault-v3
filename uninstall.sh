@@ -83,6 +83,22 @@ if [ -f "$RECALL_SKILL" ]; then
   echo "✓ removed $RECALL_SKILL"
 fi
 
+# /close-session + /cs alias 정리.
+# audit-2026-05-25 N8 + round-3 D: 사용자 커스터마이즈 보존 위해 unique marker `[mv3-skill]` 매칭.
+# (두 skill frontmatter description 첫머리에 박힌 고유 토큰. "MindVault v3" 같은 흔한 문구로는
+# 사용자 personal 본문도 false-positive delete 가능했음.)
+for skill in close-session cs; do
+  target="$HOME/.claude/commands/${skill}.md"
+  if [ -f "$target" ]; then
+    if grep -qF '[mv3-skill]' "$target" 2>/dev/null; then
+      rm -f "$target"
+      echo "✓ removed $target"
+    else
+      echo "↷ skipped $target ([mv3-skill] marker 없음 — 사용자 변형으로 보임)"
+    fi
+  fi
+done
+
 # --- 4. Deployed scripts directory ----------------------------------------
 SCRIPTS_DIR="$HOME/.claude/scripts/mindvault"
 if [ -d "$SCRIPTS_DIR" ]; then

@@ -32,6 +32,12 @@ SPRINT3_SRC=("$REPO_DIR/src/memory_extractor.py" "$REPO_DIR/src/memory_review_cl
 MEMORY_SKILL_SRC="$REPO_DIR/skill/memory_review.md"
 MEMORY_SKILL_TARGET="$COMMANDS_DIR/memory_review.md"
 
+# close-session 명시 closer (자동 hook narrative 보완용)
+CLOSE_SESSION_SKILL_SRC="$REPO_DIR/skill/close-session.md"
+CLOSE_SESSION_SKILL_TARGET="$COMMANDS_DIR/close-session.md"
+CS_SKILL_SRC="$REPO_DIR/skill/cs.md"
+CS_SKILL_TARGET="$COMMANDS_DIR/cs.md"
+
 if [ ! -f "$SRC" ]; then
   echo "error: $SRC not found" >&2
   exit 1
@@ -91,6 +97,25 @@ if [ -f "$MEMORY_SKILL_SRC" ]; then
   cp "$MEMORY_SKILL_SRC" "$MEMORY_SKILL_TARGET"
   echo "✓ installed /memory_review skill at $MEMORY_SKILL_TARGET"
 fi
+
+# /close-session + /cs alias 배포 (자동 hook 의 narrative 보완용 명시 closer)
+# 인덱스 0,3,6: src / target / label triple (colon-delim 회피 — path 안 ':' 안전)
+SKILL_TRIPLES=(
+  "$CLOSE_SESSION_SKILL_SRC" "$CLOSE_SESSION_SKILL_TARGET" "/close-session"
+  "$CS_SKILL_SRC"            "$CS_SKILL_TARGET"            "/cs"
+)
+i=0
+while [ $i -lt ${#SKILL_TRIPLES[@]} ]; do
+  src="${SKILL_TRIPLES[$i]}"
+  target="${SKILL_TRIPLES[$((i+1))]}"
+  label="${SKILL_TRIPLES[$((i+2))]}"
+  if [ -f "$src" ]; then
+    [ -f "$target" ] && cp "$target" "$target.bak"
+    cp "$src" "$target"
+    echo "✓ installed $label skill at $target"
+  fi
+  i=$((i+3))
+done
 
 if [ ! -f "$SETTINGS" ]; then
   echo '{"hooks":{}}' > "$SETTINGS"
