@@ -12,11 +12,20 @@ if [ "$_ARCH" != "arm64" ] || [ "$_OS" != "Darwin" ]; then
   echo "⚠ MindVault v3 의 MLX 백엔드는 Apple Silicon Mac 에서만 동작합니다."
   echo "  현재 환경: $_OS $_ARCH"
   echo "  Linux/Intel Mac 지원은 v3.3.0 (백엔드 추상화) 예정."
-  read -r -p "  계속 진행 시 모델 자동 설치(Sprint 4.5/17)는 건너뜁니다. 인프라만 설치하시겠습니까? [y/N] " _resp
-  if [ "${_resp:-N}" != "y" ] && [ "${_resp:-N}" != "Y" ]; then
-    echo "  설치 취소."
+  # non-interactive (CI, curl|bash, no stdin) 에선 read 가 EOF로 즉시 fail —
+  # set -e 로 silent abort 되니, 명시 처리해서 user-facing 메시지 보장.
+  if [ ! -t 0 ]; then
+    echo "  설치 취소 (non-interactive 환경 — stdin 없음). 인프라만 설치하려면 MV3_SKIP_MODELS=1 ./install.sh"
     exit 1
   fi
+  if ! read -r -p "  계속 진행 시 모델 자동 설치(Sprint 4.5/17)는 건너뜁니다. 인프라만 설치하시겠습니까? [y/N] " _resp; then
+    echo "  설치 취소 (입력 읽기 실패)."
+    exit 1
+  fi
+  case "${_resp:-N}" in
+    y|Y) ;;
+    *)   echo "  설치 취소."; exit 1 ;;
+  esac
   export MV3_SKIP_MODELS=1
 fi
 
@@ -28,6 +37,11 @@ fi
 # do_step <name> <step_file> <action_command>
 do_step() {
   local name="$1" step_file="$2" action="$3"
+  # defensive: 빈 step_file argument 시 cryptic mkdir error 대신 명확한 메시지.
+  if [ -z "${step_file:-}" ]; then
+    echo "  ✗ do_step: empty step_file for '$name' (caller bug)" >&2
+    return 1
+  fi
   if grep -q "^${name}$" "$step_file" 2>/dev/null; then
     echo "  ✓ ${name} (already done, skipping)"
     return 0
@@ -53,6 +67,7 @@ print_next_step() {
     plist-loaded) echo "  Next: ls -la ~/Library/LaunchAgents/ 권한 확인 후 ./install.sh 재실행" ;;
     healthy)      echo "  Next: tail ~/Library/Logs/{gemma,arctic-ko}-mlx.err 진단 후 ./install.sh 재실행" ;;
     verified)     echo "  Next: ls ~/.cache/mlx-arctic-ko/model.safetensors 확인 후 ./install.sh 재실행" ;;
+    *)            echo "  Next: ./install.sh 재실행 또는 install.sh debug 로그 확인 (unknown step: $1)" ;;
   esac
 }
 
