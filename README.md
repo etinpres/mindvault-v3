@@ -2,7 +2,7 @@
 
 > Claude Code의 영구 기억 시스템. 4-layer 파이프라인으로 세션 요약 자동 주입 · 자연어 검색 · Memory Compiler · 자동 회수까지.
 
-**v3.2.1** · Karpathy LLM-as-Compiler 패턴 실증 · macOS (Apple Silicon) · MIT license · 360 passed
+**v3.2.2** · Karpathy LLM-as-Compiler 패턴 실증 · macOS (Apple Silicon) · MIT license · 363 passed
 
 ---
 
@@ -68,7 +68,7 @@ MindVault v3는 그 망각의 빈 자리를 세 축으로 메웁니다:
 **Latency** (n=3,193): **p50=40ms, p95=400ms, p99=471ms**. timeout(≥400ms) skip ~6%. v3.0.x post-ship perf 회귀 (avg 452ms) 는 해소 (NEXT-27/28 fix + alias_index/intent cache 운영 누적).
 
 > 옛 표기 추적:
-> - "295 passed" (v3.0.0) → "307" (v3.0.1) → "311" (v3.0.2) → "327" (v3.1.0) → "340" (v3.1.1/v3.1.2/v3.1.3) → **"360" (v3.2.0/v3.2.1)**
+> - "295 passed" (v3.0.0) → "307" (v3.0.1) → "311" (v3.0.2) → "327" (v3.1.0) → "340" (v3.1.1/v3.1.2/v3.1.3) → "360" (v3.2.0/v3.2.1) → **"363" (v3.2.2)**
 > - "hit rate 2.6%" (measurement artifact) → "55.7%" (v3.0.2 audit 시점) → **"66.3%"** (현재)
 > - "avg 452ms" (NEXT-27 이전) → **"p50=40ms"** (현재)
 > - "Gemma 수동 사전 설치" (v3.0~v3.1.3) → **"install.sh 자동" (v3.2.0)**

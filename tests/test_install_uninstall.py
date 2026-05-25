@@ -183,10 +183,19 @@ class TestCloseSessionSkillDeploy(unittest.TestCase):
         self.assertIn("conflict-", body, "slug race rescue 패턴 누락")
         self.assertNotIn("mv -n ", body, "mv -n (silent loss) 패턴 잔존")
 
-    def test_install_uses_array_not_colon_triple(self):
-        """codex round-2 N7 가드 — install.sh 가 ':'-delim triple 대신 array 사용."""
+    def test_install_uses_defensive_deploy_skill(self):
+        """v3.2.2 가드 — install.sh 가 deploy_skill 헬퍼로 cp 사이트 통일.
+
+        옛 SKILL_TRIPLES 배열 + 직접 cp 패턴은 cp fail 시 .bak 만 남고 .md 잃을 위험.
+        v3.2.2 의 deploy_skill 헬퍼는 cp fail 시 .bak 자동 복원 보장.
+        """
         sh = (self.repo / "install.sh").read_text()
-        self.assertIn("SKILL_TRIPLES=(", sh, "array-based skill loop 누락")
+        self.assertIn("deploy_skill()", sh, "deploy_skill 헬퍼 정의 누락")
+        # 4개 skill 모두 헬퍼 호출 — recall, memory_review, close-session, cs
+        for label in ("/recall", "/memory_review", "/close-session", "/cs"):
+            self.assertIn(f'deploy_skill ', sh, f"{label} deploy_skill 호출 누락")
+        # 옛 SKILL_TRIPLES 배열 패턴은 제거됨
+        self.assertNotIn("SKILL_TRIPLES=(", sh, "옛 SKILL_TRIPLES 배열 잔존 (deploy_skill 로 교체됐어야)")
 
     def test_uninstall_uses_unique_marker(self):
         """codex round-3 D 가드 — uninstall sentinel 이 unique `[mv3-skill]` 마커.

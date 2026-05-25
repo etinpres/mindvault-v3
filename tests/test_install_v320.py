@@ -151,6 +151,54 @@ class TestConvertArcticKo(unittest.TestCase):
         self.assertIn(b"mlx_embeddings", r.stderr)
 
 
+class TestDeploySkill(unittest.TestCase):
+    """v3.2.2 — deploy_skill 헬퍼의 defensive cp + .bak 자동 복원."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.src = Path(self.tmp.name) / "skill.md"
+        self.target = Path(self.tmp.name) / "target.md"
+        self.bak = Path(self.tmp.name) / "target.md.bak"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run(self, snippet: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", "-c",
+             f"export MV3_SOURCE_HELPERS_ONLY=1 ARCH_OVERRIDE=arm64; "
+             f"source {INSTALL_SH}; {snippet}"],
+            capture_output=True,
+        )
+
+    def test_missing_src_aborts_target_preserved(self):
+        """src 부재 시 deploy_skill return 1, 기존 target 그대로."""
+        self.target.write_text("original content")
+        # src 미생성
+        r = self._run(f'deploy_skill {self.src} {self.target} "/test"')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(b"skill source missing", r.stderr)
+        self.assertEqual(self.target.read_text(), "original content")
+        self.assertFalse(self.bak.exists())
+
+    def test_successful_deploy_removes_bak(self):
+        """정상 cp 후 .bak 정리 (cruft 누적 방지)."""
+        self.src.write_text("new content")
+        self.target.write_text("old content")
+        r = self._run(f'deploy_skill {self.src} {self.target} "/test"')
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.target.read_text(), "new content")
+        self.assertFalse(self.bak.exists())   # 성공 시 .bak 정리됨
+
+    def test_first_install_no_existing_target(self):
+        """target 처음 설치 시 .bak 없음, cp 정상."""
+        self.src.write_text("new content")
+        r = self._run(f'deploy_skill {self.src} {self.target} "/test"')
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.target.read_text(), "new content")
+        self.assertFalse(self.bak.exists())
+
+
 class TestGemmaRunner(unittest.TestCase):
     """scripts/gemma_server_runner.sh 가 mlx_lm.server 호출하는 명령 형식 검증."""
 

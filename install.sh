@@ -71,6 +71,33 @@ print_next_step() {
   esac
 }
 
+# v3.2.2 — defensive skill/file deploy 헬퍼.
+# 옛 패턴은 `.bak` 백업 후 `cp $src $target`. cp 가 fail 하면 set -e 가 abort —
+# `.bak` 만 남고 `.md` 부재. 사용자가 skill 잃음 (Claude Code resolution fail).
+# 새 패턴: src 부재 검증 → backup → cp → cp fail 시 .bak 자동 복원 → 성공 시 .bak 제거.
+# 어떤 fail 시나리오에서도 target 보존 보장.
+deploy_skill() {
+  local src="$1" target="$2" label="$3"
+  if [ ! -f "$src" ]; then
+    echo "  ✗ ${label}: skill source missing ($src)" >&2
+    return 1
+  fi
+  if [ -f "$target" ]; then
+    cp "$target" "$target.bak"
+  fi
+  if ! cp "$src" "$target"; then
+    if [ -f "$target.bak" ]; then
+      mv "$target.bak" "$target"
+      echo "  ✗ ${label}: cp failed, restored from .bak" >&2
+    else
+      echo "  ✗ ${label}: cp failed, no backup to restore" >&2
+    fi
+    return 1
+  fi
+  rm -f "$target.bak"
+  echo "  ✓ installed ${label} skill at $target"
+}
+
 if [ "${MV3_SOURCE_HELPERS_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
@@ -245,14 +272,8 @@ for f in "${SPRINT2_SRC[@]}"; do
 done
 echo "✓ deployed Sprint 2 scripts to $SCRIPTS_DIR"
 
-# Sprint 2: /recall 스킬 배포
-if [ -f "$RECALL_SKILL_SRC" ]; then
-  if [ -f "$RECALL_SKILL_TARGET" ]; then
-    cp "$RECALL_SKILL_TARGET" "$RECALL_SKILL_TARGET.bak"
-  fi
-  cp "$RECALL_SKILL_SRC" "$RECALL_SKILL_TARGET"
-  echo "✓ installed /recall skill at $RECALL_SKILL_TARGET"
-fi
+# Sprint 2: /recall 스킬 배포 (v3.2.2 — defensive deploy_skill)
+deploy_skill "$RECALL_SKILL_SRC" "$RECALL_SKILL_TARGET" "/recall" || true
 
 # Sprint 3: SessionEnd 훅 + 추가 스크립트 + /memory review 스킬
 if [ -f "$END_SRC" ]; then
@@ -274,32 +295,13 @@ for f in "${SPRINT3_SRC[@]}"; do
   fi
 done
 echo "✓ deployed Sprint 3 scripts to $SCRIPTS_DIR"
-if [ -f "$MEMORY_SKILL_SRC" ]; then
-  if [ -f "$MEMORY_SKILL_TARGET" ]; then
-    cp "$MEMORY_SKILL_TARGET" "$MEMORY_SKILL_TARGET.bak"
-  fi
-  cp "$MEMORY_SKILL_SRC" "$MEMORY_SKILL_TARGET"
-  echo "✓ installed /memory_review skill at $MEMORY_SKILL_TARGET"
-fi
+# Sprint 3: /memory_review 스킬 배포 (v3.2.2 — defensive deploy_skill)
+deploy_skill "$MEMORY_SKILL_SRC" "$MEMORY_SKILL_TARGET" "/memory_review" || true
 
-# /close-session + /cs alias 배포 (자동 hook 의 narrative 보완용 명시 closer)
-# 인덱스 0,3,6: src / target / label triple (colon-delim 회피 — path 안 ':' 안전)
-SKILL_TRIPLES=(
-  "$CLOSE_SESSION_SKILL_SRC" "$CLOSE_SESSION_SKILL_TARGET" "/close-session"
-  "$CS_SKILL_SRC"            "$CS_SKILL_TARGET"            "/cs"
-)
-i=0
-while [ $i -lt ${#SKILL_TRIPLES[@]} ]; do
-  src="${SKILL_TRIPLES[$i]}"
-  target="${SKILL_TRIPLES[$((i+1))]}"
-  label="${SKILL_TRIPLES[$((i+2))]}"
-  if [ -f "$src" ]; then
-    [ -f "$target" ] && cp "$target" "$target.bak"
-    cp "$src" "$target"
-    echo "✓ installed $label skill at $target"
-  fi
-  i=$((i+3))
-done
+# /close-session + /cs alias 배포 (v3.2.2 — defensive deploy_skill).
+# 자동 hook 의 narrative 보완용 명시 closer.
+deploy_skill "$CLOSE_SESSION_SKILL_SRC" "$CLOSE_SESSION_SKILL_TARGET" "/close-session" || true
+deploy_skill "$CS_SKILL_SRC"            "$CS_SKILL_TARGET"            "/cs"            || true
 
 # v3.1.1 (audit-2026-05-25 post-ship CRITICAL): 옛 personal SKILL 디렉토리
 # `~/.claude/skills/{close-session,cs}/` 가 새 deploy 본을 가릴 수 있음.
