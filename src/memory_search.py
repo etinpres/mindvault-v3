@@ -231,9 +231,15 @@ def _vec_top_k(
     )
     if not rows:
         return [], {}
+    # NEXT-36 (2026-05-26): valid 카운터로 mat ↔ meta 정합. 이전엔 mat[i] (row 인덱스)
+    # 와 meta(valid 만 append) 인덱스가 어긋나 invalid row 1건만 있어도:
+    #   (a) results 가 IndexError 또는 잘못된 path 반환
+    #   (b) raw_map 이 cosine 값을 잘못된 path 에 매핑 (cross-contamination)
+    # search.py:vec_candidates 의 안전 패턴(valid 카운터 + mat[:valid])과 일치시킴.
     mat = np.zeros((len(rows), EMBED_DIM), dtype=np.float32)
     meta: list[tuple[str, str]] = []
-    for i, r in enumerate(rows):
+    valid = 0
+    for r in rows:
         emb = r["embedding"]
         if not emb:
             # NEXT-28 sentinel — 빈 bytes 는 의도된 무한-재시도 차단. silent.
@@ -242,8 +248,12 @@ def _vec_top_k(
         if arr.shape != (EMBED_DIM,):
             _debug(f"skip bad vec dim {arr.shape} path={r['path']}")
             continue
-        mat[i] = arr
+        mat[valid] = arr
         meta.append((r["path"], r["kind"]))
+        valid += 1
+    if valid == 0:
+        return [], {}
+    mat = mat[:valid]
     q = np.asarray(query_vec, dtype=np.float32)
     q_norm = np.linalg.norm(q)
     if q_norm == 0:
@@ -252,7 +262,7 @@ def _vec_top_k(
     norms = np.linalg.norm(mat, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     mat_norm = mat / norms
-    sims = mat_norm @ q  # (N,) raw cosine [0..1]
+    sims = mat_norm @ q  # (valid,) raw cosine [0..1]
     idx_sorted = np.argsort(-sims)[:limit]
     results = [(meta[i][0], rank + 1, meta[i][1]) for rank, i in enumerate(idx_sorted)]
     # Sprint 11: raw_map은 limit과 무관하게 전체 path × kind 의 최대 cosine 보유.
@@ -347,6 +357,11 @@ def _resolve_wikilink(conn: sqlite3.Connection, slug: str) -> dict | None:
     1. memories.name == slug (frontmatter `name:` 슬러그 직접 매칭)
     2. path basename(.md 제외, '-' → '_') == slug.replace('-','_')
     실패 시 None.
+
+    NEXT-36 (2026-05-26): path LIKE 분기에 `ORDER BY path` 추가. 다중 후보 시
+    SQLite 의 반환 순서 보장 없어 같은 wikilink 가 호출마다 다른 메모리로 resolve
+    되던 비결정성 차단. lexicographic 최소 path 우선 — 안정 결정성만 보장하면
+    되므로 정렬 키 자체는 문자열 비교로 충분.
     """
     row = conn.execute(
         "SELECT path, name, description FROM memories WHERE name=?", (slug,)
@@ -355,7 +370,7 @@ def _resolve_wikilink(conn: sqlite3.Connection, slug: str) -> dict | None:
         return dict(row)
     snake = slug.replace("-", "_")
     candidates = conn.execute(
-        "SELECT path, name, description FROM memories WHERE path LIKE ?",
+        "SELECT path, name, description FROM memories WHERE path LIKE ? ORDER BY path",
         (f"%/{snake}.md",),
     ).fetchall()
     if candidates:

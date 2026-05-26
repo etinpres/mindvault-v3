@@ -281,5 +281,175 @@ class TestProceduralTypeGate(unittest.TestCase):
         self.assertEqual(_gate_for_path("/x/memory/y.md", 0.0), 0.0)
 
 
+class TestVecTopKInvalidRowRegression(unittest.TestCase):
+    """NEXT-36 (2026-05-26) — invalid embedding row 가 섞여도 mat ↔ meta 인덱스 정합.
+
+    이전: mat[i] (row 인덱스) 와 meta(valid 만 append) 인덱스 미스매치 →
+    - results IndexError 또는 잘못된 path 반환
+    - raw_map 의 cosine 값이 잘못된 path 에 매핑 (cross-contamination)
+
+    fix: valid 카운터로 mat[valid] = arr; mat = mat[:valid]. search.py:vec_candidates
+    와 동일 패턴.
+    """
+
+    class _MockRow:
+        def __init__(self, path, kind, embedding):
+            self._d = {"path": path, "kind": kind, "embedding": embedding}
+        def __getitem__(self, k):
+            return self._d[k]
+
+    class _MockConn:
+        def __init__(self, rows):
+            self._rows = rows
+        def execute(self, _q):
+            rows = self._rows
+            class _C:
+                def __iter__(self):
+                    return iter(rows)
+            return _C()
+
+    def _make_query_and_vecs(self, seed=42):
+        import numpy as np
+        rng = np.random.RandomState(seed)
+        v0 = rng.rand(1024).astype(np.float32)
+        v2 = rng.rand(1024).astype(np.float32)
+        v3 = rng.rand(1024).astype(np.float32)
+        return v0, v2, v3
+
+    def test_empty_embedding_row_does_not_break_alignment(self):
+        from memory_search import _vec_top_k
+        v0, v2, v3 = self._make_query_and_vecs()
+        rows = [
+            self._MockRow("/p0", "body", v0.tobytes()),
+            self._MockRow("/p1_empty", "body", b""),  # invalid sentinel
+            self._MockRow("/p2", "body", v2.tobytes()),
+            self._MockRow("/p3", "body", v3.tobytes()),
+        ]
+        conn = self._MockConn(rows)
+        results, raw_map = _vec_top_k(conn, v3.tolist(), limit=4)
+        # 정합 검증: top-1 은 query 와 동일한 v3 → /p3 path.
+        self.assertEqual(results[0][0], "/p3")
+        self.assertAlmostEqual(raw_map["/p3"], 1.0, places=4)
+        # invalid row 는 raw_map 에서 누락되어야 한다.
+        self.assertNotIn("/p1_empty", raw_map)
+        # path 와 cosine 매핑이 cross-contamination 없이 정확해야.
+        self.assertEqual({"/p0", "/p2", "/p3"}, set(raw_map.keys()))
+        self.assertEqual({r[0] for r in results}, {"/p0", "/p2", "/p3"})
+
+    def test_bad_dim_embedding_row_does_not_break_alignment(self):
+        import numpy as np
+        from memory_search import _vec_top_k
+        v0, v2, _ = self._make_query_and_vecs()
+        rows = [
+            self._MockRow("/p0", "body", v0.tobytes()),
+            self._MockRow("/p1_baddim", "body", np.zeros(512, dtype=np.float32).tobytes()),
+            self._MockRow("/p2", "body", v2.tobytes()),
+        ]
+        conn = self._MockConn(rows)
+        results, raw_map = _vec_top_k(conn, v0.tolist(), limit=3)
+        self.assertEqual(results[0][0], "/p0")
+        self.assertNotIn("/p1_baddim", raw_map)
+        self.assertEqual({"/p0", "/p2"}, set(raw_map.keys()))
+
+    def test_all_invalid_rows_returns_empty(self):
+        from memory_search import _vec_top_k
+        v0, _, _ = self._make_query_and_vecs()
+        rows = [
+            self._MockRow("/p1_empty", "body", b""),
+        ]
+        conn = self._MockConn(rows)
+        results, raw_map = _vec_top_k(conn, v0.tolist(), limit=3)
+        self.assertEqual(results, [])
+        self.assertEqual(raw_map, {})
+
+    def test_all_valid_rows_backwards_compat(self):
+        from memory_search import _vec_top_k
+        v0, v2, v3 = self._make_query_and_vecs()
+        rows = [
+            self._MockRow("/p0", "body", v0.tobytes()),
+            self._MockRow("/p2", "body", v2.tobytes()),
+            self._MockRow("/p3", "body", v3.tobytes()),
+        ]
+        conn = self._MockConn(rows)
+        results, raw_map = _vec_top_k(conn, v0.tolist(), limit=3)
+        self.assertEqual(results[0][0], "/p0")
+        self.assertEqual(len(results), 3)
+        self.assertEqual(len(raw_map), 3)
+
+
+class TestFtsEscapeParity(unittest.TestCase):
+    """NEXT-36 (2026-05-26) — search.fts_escape 와 memory_search._fts_escape 의
+    동등성 회귀 가드. 두 모듈이 동일 토큰 정책을 유지해야 하는데 한 쪽만 수정해
+    skew 일으키면 sessions/memory 검색 결과가 달라진다. DRY 위반은 비용 > 효용이라
+    유지하되 동등성은 회귀로 묶는다.
+    """
+
+    def test_fts_escape_outputs_match(self):
+        from search import fts_escape as session_escape
+        from memory_search import _fts_escape as memory_escape
+        samples = [
+            "MindVault recall",
+            "fix-the-fix 패턴",
+            "1234",
+            "?!@#",
+            "abc",
+            "a",
+            "한국어 검색",
+            "session_id",
+            "",
+            "   ",
+            "v3.2.9",
+            "/path/to/file.md",
+        ]
+        for q in samples:
+            with self.subTest(query=q):
+                self.assertEqual(
+                    session_escape(q),
+                    memory_escape(q),
+                    f"fts_escape skew for {q!r}",
+                )
+
+
+class TestResolveWikilinkDeterminism(unittest.TestCase):
+    """NEXT-36 (2026-05-26) — 다중 후보 시 ORDER BY path 안정성."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.tmp_db = Path(self.tmp_dir.name) / "test.db"
+        from indexer import open_db
+        conn = open_db(self.tmp_db)
+        # 같은 basename 의 두 후보 (다른 경로). frontmatter name 은 둘 다 빈
+        # 문자열로 두어 first-clause (name=?) 가 not-found 가 되게 한다.
+        conn.execute(
+            "INSERT INTO memories(path, name, description, mtime_ns, indexed_at) "
+            "VALUES (?, '', 'desc-z', 0, '2026-05-26T00:00:00Z')",
+            ("/z/y/foo_bar.md",),
+        )
+        conn.execute(
+            "INSERT INTO memories(path, name, description, mtime_ns, indexed_at) "
+            "VALUES (?, '', 'desc-a', 0, '2026-05-26T00:00:00Z')",
+            ("/a/b/foo_bar.md",),
+        )
+        conn.commit()
+        self.conn = conn
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp_dir.cleanup()
+
+    def test_multiple_candidates_picks_lex_smallest_path(self):
+        from memory_search import _resolve_wikilink
+        # Insert 순서는 /z 가 먼저였지만 ORDER BY path → /a 가 먼저 와야 한다.
+        out = _resolve_wikilink(self.conn, "foo-bar")
+        self.assertIsNotNone(out)
+        self.assertEqual(out["path"], "/a/b/foo_bar.md")
+        self.assertEqual(out["description"], "desc-a")
+
+    def test_resolve_stable_across_repeated_calls(self):
+        from memory_search import _resolve_wikilink
+        outs = {_resolve_wikilink(self.conn, "foo-bar")["path"] for _ in range(20)}
+        self.assertEqual(outs, {"/a/b/foo_bar.md"})
+
+
 if __name__ == "__main__":
     unittest.main()
