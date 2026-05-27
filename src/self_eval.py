@@ -55,6 +55,15 @@ SELF_AFFIRMING_MIN_HITS = 2
 # 발견 = LLM 이 회수 결과를 explicit 알림 (id mention 없는 경우의 약한 신호).
 RECALL_MARKER_RE = re.compile(r"→\s*메모리\s*회수[::]", re.IGNORECASE)
 
+# NEXT-37 Phase 1B retroactive — hook (hooks/memory-recall.py:_format_output)
+# 가 출력하는 system-reminder 블록의 고유 header. 다른 종류 reminder
+# (telegram-guard 등) 와 구분.
+RECALL_INJECTION_HEADER = "# 메모리 회수 (Layer 4 hybrid)"
+# hook 출력 line 형식: "- **<name>** (score 0.XX, <source>) — <desc>"
+RECALLED_NAME_RE = re.compile(
+    r"^\s*-\s+\*\*([^*]+?)\*\*\s+\(score", re.MULTILINE
+)
+
 
 def _debug(msg: str) -> None:
     try:
@@ -721,6 +730,81 @@ def analyze_recent(
     }
 
 
+def extract_recalled_ids_from_hook_injection(text: str) -> list[str]:
+    """transcript user-role text 가 hook 가 주입한 회수 system-reminder 면
+    회수된 메모리 name list 추출. 아니면 빈 list.
+
+    매칭 조건: RECALL_INJECTION_HEADER 가 본문에 있고, "- **<name>** (score..."
+    패턴 줄들. 다른 종류 system-reminder (telegram-guard 등) 는 [] 반환.
+
+    NEXT-37 Phase 1B retroactive — metrics.jsonl 에 recalled_ids 박히기
+    이전 데이터 (Phase 1A 이전 수개월 누적) 에도 활용도 분석 가능.
+    """
+    if not text or RECALL_INJECTION_HEADER not in text:
+        return []
+    return [m.group(1).strip() for m in RECALLED_NAME_RE.finditer(text)]
+
+
+def load_recall_events_from_transcripts(
+    projects_root: Path = DEFAULT_PROJECTS_ROOT,
+    since_unix: float | None = None,
+) -> list[dict]:
+    """metrics.jsonl 우회 — transcript jsonl 안 hook injection 자체에서
+    회수 event 재구축. Phase 1A 이전 데이터 retroactive baseline 용.
+
+    두 가지 hook output 위치 처리:
+    1. type='attachment' + attachment.hookName='UserPromptSubmit'
+       → attachment.stdout 또는 attachment.content (Claude Code v2.x 현 format)
+    2. type='user' + message.content 안 system-reminder (옛 format)
+
+    매칭된 본문에 RECALL_INJECTION_HEADER 가 있어야 회수 event 로 인정.
+    """
+    events: list[dict] = []
+    for jp in iter_session_jsonl_paths(projects_root):
+        try:
+            with jp.open(encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    ts_unix = _parse_ts(d.get("timestamp", ""))
+                    if ts_unix is None:
+                        continue
+                    if since_unix is not None and ts_unix < since_unix:
+                        continue
+                    text = ""
+                    t = d.get("type")
+                    if t == "attachment":
+                        att = d.get("attachment") or {}
+                        if att.get("hookName") != "UserPromptSubmit":
+                            continue
+                        text = att.get("stdout") or att.get("content") or ""
+                    elif t == "user":
+                        msg = d.get("message") or {}
+                        text = _extract_text(msg.get("content"))
+                    else:
+                        continue
+                    ids = extract_recalled_ids_from_hook_injection(text)
+                    if not ids:
+                        continue
+                    events.append({
+                        "_ts_unix": ts_unix,
+                        "ts": d.get("timestamp"),
+                        "kind": "recall",
+                        "picked": len(ids),
+                        "recalled_ids": ids,
+                    })
+        except OSError as e:
+            _debug(f"transcript scan fail {jp}: {e}")
+            continue
+    events.sort(key=lambda e: e["_ts_unix"])
+    return events
+
+
 def next_assistant_text(
     turns: list[dict], recall_ts: float, window_sec: int = 300
 ) -> str | None:
@@ -795,15 +879,21 @@ def recall_utilization(
     projects_root: Path = DEFAULT_PROJECTS_ROOT,
     hours_back: int = 168,
     use_cache: bool = True,
+    events_source: str = "metrics",
 ) -> dict:
     """NEXT-37 Phase 1B — 최근 N 시간 recall 이벤트의 답변 활용도 분석.
 
-    recalled_ids 보유 event (Phase 1A 이후) 만 대상. 같은 session jsonl 의
-    recall_ts 직후 5분 안 첫 assistant text 와 매칭 → cited / marker_only /
-    unused / no_response 4-bucket.
+    events_source:
+    - "metrics" (default): metrics.jsonl 의 recalled_ids 보유 event
+      (Phase 1A 이후 누적 데이터)
+    - "transcripts": transcript jsonl 안 hook injection 직접 파싱
+      (retroactive — Phase 1A 이전 수개월 누적 baseline 가능)
+
+    같은 session jsonl 의 recall_ts 직후 5분 안 첫 assistant text 와 매칭
+    → cited / marker_only / unused / no_response 4-bucket.
 
     반환:
-    - hours_back, since_unix
+    - hours_back, since_unix, events_source
     - total_with_ids: recalled_ids 보유 event 수
     - by_status: bucket count
     - utilization_rate_strict: cited / judged (no_response 제외)
@@ -811,11 +901,16 @@ def recall_utilization(
     - per_event_sample: 최대 10건
     """
     since = time.time() - hours_back * 3600
-    events = load_recall_events(metrics_path, since_unix=since)
-    events_with_ids = [
-        e for e in events
-        if isinstance(e.get("recalled_ids"), list) and e["recalled_ids"]
-    ]
+    if events_source == "transcripts":
+        events_with_ids = load_recall_events_from_transcripts(
+            projects_root=projects_root, since_unix=since
+        )
+    else:
+        events = load_recall_events(metrics_path, since_unix=since)
+        events_with_ids = [
+            e for e in events
+            if isinstance(e.get("recalled_ids"), list) and e["recalled_ids"]
+        ]
 
     all_turns: list[dict] = []
     if use_cache:
@@ -856,6 +951,7 @@ def recall_utilization(
     return {
         "hours_back": hours_back,
         "since_unix": since,
+        "events_source": events_source,
         "total_with_ids": len(events_with_ids),
         "by_status": by_status,
         "utilization_rate_strict": (
@@ -1006,6 +1102,13 @@ def main() -> int:
         help="NEXT-37 Phase 1B — recalled_ids 의 답변 cite 활용도 (cited / marker_only / unused / no_response)",
     )
     parser.add_argument(
+        "--source",
+        choices=["metrics", "transcripts"],
+        default="metrics",
+        help="--recall-utilization 의 event source — metrics (Phase 1A 이후) "
+             "또는 transcripts (retroactive — 옛 hook injection 파싱)",
+    )
+    parser.add_argument(
         "--use-cache",
         dest="use_cache",
         action="store_true",
@@ -1050,6 +1153,7 @@ def main() -> int:
                 projects_root=args.projects_root,
                 hours_back=args.hours,
                 use_cache=args.use_cache,
+                events_source=args.source,
             )
             json.dump(out, sys.stdout, ensure_ascii=False, indent=2)
             return 0

@@ -843,5 +843,175 @@ class TestRecallUtilizationEndToEnd(unittest.TestCase):
             self.assertEqual(out["utilization_rate_strict"], 0.0)
 
 
+class TestExtractRecalledIdsFromHookInjection(unittest.TestCase):
+    """NEXT-37 Phase 1B retroactive — system-reminder hook injection 파싱."""
+
+    def test_extracts_multi_ids(self):
+        from self_eval import extract_recalled_ids_from_hook_injection
+        text = (
+            "<system-reminder>\n"
+            "# 메모리 회수 (Layer 4 hybrid)\n"
+            "- **project-mindvault** (score 0.95, vec+fts) — MindVault v3\n"
+            "  발췌: 어떤 단락\n"
+            "- **feedback-x** (score 0.62, vec) — 다른 메모\n"
+            "</system-reminder>"
+        )
+        out = extract_recalled_ids_from_hook_injection(text)
+        self.assertEqual(out, ["project-mindvault", "feedback-x"])
+
+    def test_returns_empty_when_no_header(self):
+        from self_eval import extract_recalled_ids_from_hook_injection
+        text = (
+            "<system-reminder>\n"
+            "<telegram-guard>CLI 직접 입력</telegram-guard>\n"
+            "- **fake** (score 0.99, vec) — 헤더 없는 어쩌다 일치\n"
+            "</system-reminder>"
+        )
+        self.assertEqual(extract_recalled_ids_from_hook_injection(text), [])
+
+    def test_returns_empty_for_blank(self):
+        from self_eval import extract_recalled_ids_from_hook_injection
+        self.assertEqual(extract_recalled_ids_from_hook_injection(""), [])
+        self.assertEqual(extract_recalled_ids_from_hook_injection(None), [])
+
+    def test_header_present_but_no_lines(self):
+        from self_eval import extract_recalled_ids_from_hook_injection
+        text = (
+            "<system-reminder>\n"
+            "# 메모리 회수 (Layer 4 hybrid)\n"
+            "# 결과 없음\n"
+            "</system-reminder>"
+        )
+        self.assertEqual(extract_recalled_ids_from_hook_injection(text), [])
+
+
+class TestLoadRecallEventsFromTranscripts(unittest.TestCase):
+    """NEXT-37 Phase 1B retroactive — transcript jsonl 직접 scan.
+
+    두 format 모두: attachment (현 v2.x) + user-role (옛).
+    """
+
+    def test_user_role_hook_injection(self):
+        from self_eval import load_recall_events_from_transcripts
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            projects = tmp_p / "projects" / "-Users-x"
+            projects.mkdir(parents=True)
+            injection = (
+                "<system-reminder>\n"
+                "# 메모리 회수 (Layer 4 hybrid)\n"
+                "- **recall-test** (score 0.91, vec) — t\n"
+                "</system-reminder>"
+            )
+            (projects / "sess.jsonl").write_text(
+                json.dumps({
+                    "type": "user", "timestamp": "2099-03-01T00:00:00Z",
+                    "message": {"content": injection},
+                }) + "\n",
+                encoding="utf-8",
+            )
+            events = load_recall_events_from_transcripts(
+                projects_root=tmp_p / "projects"
+            )
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["recalled_ids"], ["recall-test"])
+
+    def test_attachment_hook_injection(self):
+        """Claude Code v2.x format: type='attachment', attachment.stdout 안 hook 출력."""
+        from self_eval import load_recall_events_from_transcripts
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            projects = tmp_p / "projects" / "-Users-y"
+            projects.mkdir(parents=True)
+            injection = (
+                "<system-reminder>\n"
+                "# 메모리 회수 (Layer 4 hybrid)\n"
+                "- **attach-mem** (score 0.88, vec+fts) — t\n"
+                "</system-reminder>\n"
+            )
+            (projects / "sess.jsonl").write_text(
+                json.dumps({
+                    "type": "attachment",
+                    "timestamp": "2099-03-01T00:00:00Z",
+                    "attachment": {
+                        "hookName": "UserPromptSubmit",
+                        "hookEvent": "UserPromptSubmit",
+                        "stdout": injection,
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+            events = load_recall_events_from_transcripts(
+                projects_root=tmp_p / "projects"
+            )
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["recalled_ids"], ["attach-mem"])
+
+    def test_attachment_other_hook_skipped(self):
+        """SessionStart 등 다른 hook attachment 는 무시."""
+        from self_eval import load_recall_events_from_transcripts
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            projects = tmp_p / "projects" / "-Users-z"
+            projects.mkdir(parents=True)
+            (projects / "sess.jsonl").write_text(
+                json.dumps({
+                    "type": "attachment",
+                    "timestamp": "2099-03-01T00:00:00Z",
+                    "attachment": {
+                        "hookName": "SessionStart",
+                        "stdout": "# 메모리 회수 (Layer 4 hybrid)\n- **fake** (score 0.5, vec) — x",
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+            events = load_recall_events_from_transcripts(
+                projects_root=tmp_p / "projects"
+            )
+            self.assertEqual(events, [])
+
+
+class TestRecallUtilizationRetroactive(unittest.TestCase):
+    """NEXT-37 Phase 1B — events_source='transcripts' 회귀."""
+
+    def test_transcripts_source_classifies_cited(self):
+        from self_eval import recall_utilization
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            projects = tmp_p / "projects" / "-Users-x"
+            projects.mkdir(parents=True)
+            injection = (
+                "<system-reminder>\n"
+                "# 메모리 회수 (Layer 4 hybrid)\n"
+                "- **retro-mem** (score 0.88, vec+fts) — 옛 hook 출력\n"
+                "</system-reminder>"
+            )
+            (projects / "sess.jsonl").write_text(
+                json.dumps({
+                    "type": "user", "timestamp": "2099-03-01T00:00:00Z",
+                    "message": {"content": injection},
+                }) + "\n"
+                + json.dumps({
+                    "type": "user", "timestamp": "2099-03-01T00:00:05Z",
+                    "message": {"content": "실제 질문"},
+                }) + "\n"
+                + json.dumps({
+                    "type": "assistant", "timestamp": "2099-03-01T00:00:10Z",
+                    "message": {"content": "retro-mem 메모리 보면..."},
+                }) + "\n",
+                encoding="utf-8",
+            )
+            out = recall_utilization(
+                projects_root=tmp_p / "projects",
+                hours_back=24 * 365 * 200,
+                use_cache=False,
+                events_source="transcripts",
+            )
+            self.assertEqual(out["events_source"], "transcripts")
+            self.assertEqual(out["total_with_ids"], 1)
+            self.assertEqual(out["by_status"]["cited"], 1)
+            self.assertEqual(out["utilization_rate_strict"], 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()
