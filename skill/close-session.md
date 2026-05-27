@@ -269,6 +269,22 @@ fi
 
 `MEMORY.md` 가 200줄 넘으면 경고 출력. 인덱스 truncation 위험 (메모리 회수 hook 이 200줄 초과분 무시할 수 있음).
 
+### 8.5. Contradiction 검토 (v3.4+)
+
+close-session 직후 `contradiction_detector` 가 SessionEnd hook 안에서 자동 fire. 신규/업데이트 메모리가 기존 메모리와 충돌(metric 갱신·결정 반전·사실 정정) 시 `~/.claude/mindvault-v3/contradictions.jsonl` 에 append.
+
+```bash
+python -m src.contradiction_review_cli list
+```
+
+미해결 항목이 있으면 형이 선택:
+
+- **dismiss** — 충돌 아님 (false positive). `python -m src.contradiction_review_cli resolve <idx> --action dismiss --apply`
+- **supersede** — 신규가 옛 항목을 deprecate. frontmatter 에 `supersedes: [old]` / `deprecated_by: [new]` 박힘. Layer 4 회수 시 옛 항목 score × 0.3. `--action supersede --apply`
+- **update** — 옛 메모리 본문 갱신 + 신규 staged 삭제. frontmatter 는 옛 것 유지. `--action update --apply`
+
+`--apply` 없으면 dry-run.
+
 ### 9. 요약 보고
 
 ```

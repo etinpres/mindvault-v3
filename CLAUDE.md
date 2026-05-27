@@ -15,6 +15,22 @@ MindVault v3 — Claude Code 세션 간 기억 유지 시스템. MindVault v1의
 3. **Memory Compiler (Layer 3)** — 세션 종료 시 Gemma 가 결정/노하우/사실을 추출 → `memory/_procedural/_staged/` 임시 저장 → 사용자의 `/memory_review` 승인 후 영구 메모리 진입 (Sprint 13~14)
 4. **자동 회수 hook (Layer 4)** — UserPromptSubmit 마다 hybrid 검색으로 관련 메모리를 `system-reminder` 로 자동 주입 (raw cosine 게이트 + query intent classifier 가 잡담 차단, false positive 0%)
 
+## Layer 5: Contradiction Detection (v3.4+)
+
+Memory Compiler 가 신규/업데이트 메모리를 staged 한 *직후* `contradiction_detector` 가 자동 fire (`session_memory_end.py:make_contradiction_aware_writer`).
+
+- **검출**: hybrid recall (FTS5 + Arctic-ko-MLX RRF) top-5 → Gemma 4 E4B (`mlx-community/gemma-4-e4b-it-4bit`, port 8080) 가 4-way 분류 (`metric_update` / `decision_reversal` / `fact_correction` / `no_conflict`)
+- **gate**: confidence ≥ 0.7 만 review queue 추가 (false positive 회피)
+- **queue**: `~/.claude/mindvault-v3/contradictions.jsonl` (append-only, atomic rewrite via tmp + os.replace + fcntl.flock)
+- **review CLI**: `python -m src.contradiction_review_cli list / show / resolve`
+- **회수 영향**: `deprecated_by: [name]` frontmatter 가 있는 메모리는 Layer 4 hook 회수 시 raw_cosine + score 모두 × 0.3 감쇠 (sort key 가 primary raw_cosine 이므로 양쪽 감쇠 필요)
+- **비용**: Gemma 호출 1~5건 / close-session (~p95 < 4s warm)
+- **graceful fail**: detector throw 해도 staged write 흐름 차단 안 함 — 모든 실패는 silent skip + `debug.log` 로 telemetry
+
+**Cost asymmetry**: v3 는 silent abstention 정책이라 confidence < 0.7 의 false negative 를 허용. 보수적 retrieve 가 필요한 도메인 (e.g. CDSS 임상결정지원 fork) 은 threshold 낮춰야 함.
+
+**Inspiration**: 외부 CDSS MindVault fork 의 LLM-detected contradictions (fact-layer 4-type 중 detection 부분만 차용. 4-type 메모리 분류 자체는 v3.5 후보).
+
 ### 핵심 원칙 (MindVault v1 실패 교훈)
 
 - **Claude Code 내부에서만 작동** — 별도 서버, 별도 에이전트 없음
