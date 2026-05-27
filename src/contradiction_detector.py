@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+import fcntl
 import json
 import os
 import re
@@ -8,6 +9,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from src.memory_compiler import GEMMA_MODEL, GEMMA_TIMEOUT, GEMMA_URL
@@ -285,25 +287,39 @@ def append_to_review_queue(
 ) -> Path:
     """Contradiction 항목들을 contradictions.jsonl 에 append.
 
-    review CLI (T6/T7) 가 이 파일을 읽어 unresolved 항목 노출.
+    동시 write race 회피: fcntl.flock(LOCK_EX) for the batch (parallel SessionEnd
+    hooks 가 sibling Conductor workspaces 에서 동시 호출될 수 있음).
+    OSError silent skip + _debug log (T5 hook context 에서 traceback 노이즈 회피).
+    Timestamp 는 UTC (self_eval.py:135 naive TZ 경고 따름).
     """
     out = _runtime_dir() / "contradictions.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
-    ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    with out.open("a", encoding="utf-8") as f:
-        for c in contradictions:
-            f.write(json.dumps({
-                "ts": ts,
-                "new_slug": candidate_slug,
-                "new_path": str(new_path),
-                "target_name": c.target_name,
-                "target_path": str(c.target_path),
-                "kind": c.kind.value,
-                "reason": c.reason,
-                "confidence": c.confidence,
-                "new_excerpt": c.new_body_excerpt,
-                "old_excerpt": c.old_body_excerpt,
-                "resolved": False,
-            }, ensure_ascii=False) + "\n")
+    try:
+        with out.open("a", encoding="utf-8") as f:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            except OSError as e:
+                _debug(f"queue flock fail: {type(e).__name__}: {e}")
+                # Continue without lock — better single-writer integrity than full skip
+
+            for c in contradictions:
+                f.write(json.dumps({
+                    "ts": ts,
+                    "new_slug": candidate_slug,
+                    "new_path": str(new_path),
+                    "target_name": c.target_name,
+                    "target_path": str(c.target_path),
+                    "kind": c.kind.value,
+                    "reason": c.reason,
+                    "confidence": c.confidence,
+                    "new_excerpt": c.new_body_excerpt,
+                    "old_excerpt": c.old_body_excerpt,
+                    "resolved": False,
+                }, ensure_ascii=False) + "\n")
+            # flock auto-released on file close
+    except OSError as e:
+        _debug(f"queue append fail: {type(e).__name__}: {e}")
+
     return out

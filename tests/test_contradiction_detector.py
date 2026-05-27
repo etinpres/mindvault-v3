@@ -297,3 +297,68 @@ def test_append_to_review_queue_appends_multiple_calls(tmp_path, monkeypatch):
 
     lines = out.read_text(encoding="utf-8").strip().split("\n")
     assert len(lines) == 2
+
+
+def test_append_to_review_queue_swallows_oserror(tmp_path, monkeypatch):
+    """OSError from open should be swallowed + logged via _debug, not propagated."""
+    from src.contradiction_detector import (
+        append_to_review_queue, Contradiction, ContradictionKind,
+    )
+    monkeypatch.setenv("MV3_RUNTIME_DIR", str(tmp_path))
+
+    # Force open to raise OSError. Use a directory where the jsonl file path
+    # collides with a sub-directory (PermissionError/IsADirectoryError variant).
+    target = tmp_path / "contradictions.jsonl"
+    target.mkdir()  # path is a directory, so open() will fail
+
+    c = [Contradiction(target_path=tmp_path/"a.md", target_name="a",
+                       kind=ContradictionKind.METRIC_UPDATE, reason="r",
+                       confidence=0.9)]
+
+    # Should not raise, should return Path
+    result = append_to_review_queue("x", c, new_path=tmp_path / "x.md")
+    assert result is not None  # path returned
+
+
+def test_append_to_review_queue_uses_utc_timestamp(tmp_path, monkeypatch):
+    """ts field is UTC with Z suffix (or +0000), not naive local time."""
+    import json
+    from src.contradiction_detector import (
+        append_to_review_queue, Contradiction, ContradictionKind,
+    )
+    monkeypatch.setenv("MV3_RUNTIME_DIR", str(tmp_path))
+
+    c = [Contradiction(target_path=tmp_path/"a.md", target_name="a",
+                       kind=ContradictionKind.METRIC_UPDATE, reason="r",
+                       confidence=0.9)]
+    out = append_to_review_queue("x", c, new_path=tmp_path / "x.md")
+
+    line = json.loads(out.read_text(encoding="utf-8").strip())
+    ts = line["ts"]
+    # Must end with Z or +0000 to indicate UTC
+    assert ts.endswith("Z") or ts.endswith("+0000") or ts.endswith("+00:00"), \
+        f"ts {ts!r} is not UTC-tagged — TZ drift risk per self_eval:135 warning"
+
+
+def test_append_to_review_queue_uses_flock(tmp_path, monkeypatch):
+    """flock LOCK_EX is acquired during write (mock the call to verify)."""
+    import fcntl
+    from src.contradiction_detector import (
+        append_to_review_queue, Contradiction, ContradictionKind,
+    )
+    monkeypatch.setenv("MV3_RUNTIME_DIR", str(tmp_path))
+
+    flock_calls = []
+    real_flock = fcntl.flock
+    def tracking_flock(fd, op):
+        flock_calls.append(op)
+        return real_flock(fd, op)
+    monkeypatch.setattr(fcntl, "flock", tracking_flock)
+
+    c = [Contradiction(target_path=tmp_path/"a.md", target_name="a",
+                       kind=ContradictionKind.METRIC_UPDATE, reason="r",
+                       confidence=0.9)]
+    append_to_review_queue("x", c, new_path=tmp_path / "x.md")
+
+    # LOCK_EX should have been called
+    assert fcntl.LOCK_EX in flock_calls, f"flock LOCK_EX not acquired (calls={flock_calls})"
