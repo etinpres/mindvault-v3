@@ -173,12 +173,22 @@ def make_contradiction_aware_writer(base_writer, mem_dir: Path):
     Critical contract: candidate dict carries 'path' = staged_path so
     _recall_candidates can do path-identity self-exclusion (T2 contract — closes
     the stem-suffix false-positive gap for short slugs like 'metric', 'fix').
+
+    Opt-out: set MV3_CONTRADICTION_DISABLE=1 to bypass detection (return base_writer
+    output unchanged). Use for ops emergency disable without uninstall — the staged
+    write itself is never blocked, only the detect/append step is skipped.
     """
 
     def wrapped(item, session_id, slug_override=None):
         staged_path = base_writer(item, session_id, slug_override=slug_override)
         if not staged_path:
             return staged_path  # dedup skip or write failure — no detection
+
+        # Kill switch: env-based opt-out for ops emergency. Checked AFTER staged
+        # write so the write itself is never blocked, only detection is skipped.
+        if os.environ.get("MV3_CONTRADICTION_DISABLE", "").strip() == "1":
+            _debug("contradiction detection disabled by MV3_CONTRADICTION_DISABLE=1")
+            return staged_path
 
         try:
             from contradiction_detector import (

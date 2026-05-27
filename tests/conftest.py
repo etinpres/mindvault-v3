@@ -66,12 +66,17 @@ os.environ["MV3_DATA_DIR"] = str(_TMP_ROOT / "data")
 os.environ["MV3_PROJECTS_ROOT"] = str(_TMP_ROOT / "projects")
 os.environ["MV3_HOOKS_DIR"] = str(_TMP_ROOT / "hooks")
 os.environ["MV3_SCRIPTS_DIR"] = str(_TMP_ROOT / "scripts")
+# v3.4 (T4+): contradiction_detector / contradiction_review_cli 가 참조하는
+# runtime dir (debug.log, contradictions.jsonl). 격리 안 하면 테스트가
+# production ~/.claude/mindvault-v3/contradictions.jsonl 에 append 함.
+os.environ["MV3_RUNTIME_DIR"] = str(_TMP_ROOT / "runtime")
 
 for _p in (
     Path(os.environ["MV3_DATA_DIR"]),
     Path(os.environ["MV3_PROJECTS_ROOT"]),
     Path(os.environ["MV3_HOOKS_DIR"]),
     Path(os.environ["MV3_SCRIPTS_DIR"]),
+    Path(os.environ["MV3_RUNTIME_DIR"]),
 ):
     _p.mkdir(parents=True, exist_ok=True)
 

@@ -123,3 +123,53 @@ def test_writer_skips_detection_when_write_staged_returns_none(tmp_path, monkeyp
 
     assert result is None
     assert len(detect_calls) == 0
+
+
+def test_writer_respects_MV3_CONTRADICTION_DISABLE(tmp_path, fake_write_staged,
+                                                   monkeypatch):
+    """When MV3_CONTRADICTION_DISABLE=1, detection skipped entirely.
+
+    Kill switch contract: staged write still happens, but detect/append are
+    bypassed. Ops emergency disable without uninstall.
+    """
+    from session_memory_end import make_contradiction_aware_writer
+
+    detect_calls = []
+    monkeypatch.setattr(
+        "contradiction_detector.detect_contradictions",
+        lambda c, m: detect_calls.append(c) or [],
+    )
+
+    monkeypatch.setenv("MV3_CONTRADICTION_DISABLE", "1")
+
+    mem_dir = tmp_path / "memory"
+    mem_dir.mkdir()
+    wrapped = make_contradiction_aware_writer(fake_write_staged, mem_dir)
+
+    item = {"slug": "x", "title": "T", "body": "B", "type": "feedback"}
+    result = wrapped(item, "sid", slug_override="x")
+
+    assert result is not None  # staged write happens
+    assert len(detect_calls) == 0  # but no detection
+
+
+def test_writer_runs_detection_when_disable_env_not_set(tmp_path, fake_write_staged,
+                                                        monkeypatch):
+    """When env unset, detection runs as usual (kill switch default off)."""
+    from session_memory_end import make_contradiction_aware_writer
+
+    detect_calls = []
+    monkeypatch.setattr(
+        "contradiction_detector.detect_contradictions",
+        lambda c, m: detect_calls.append(c) or [],
+    )
+    monkeypatch.delenv("MV3_CONTRADICTION_DISABLE", raising=False)
+
+    mem_dir = tmp_path / "memory"
+    mem_dir.mkdir()
+    wrapped = make_contradiction_aware_writer(fake_write_staged, mem_dir)
+
+    item = {"slug": "x", "title": "T", "body": "B", "type": "feedback"}
+    wrapped(item, "sid", slug_override="x")
+
+    assert len(detect_calls) == 1

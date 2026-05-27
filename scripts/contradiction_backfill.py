@@ -20,6 +20,7 @@ Apply resolutions interactively:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -33,7 +34,23 @@ def _add_repo_to_path() -> None:
 
 
 def _default_memory_dir() -> Path:
-    return Path.home() / ".claude" / "projects" / "-Users-yonghaekim" / "memory"
+    """Derive memory dir from $HOME — matches session_memory_end._default_memory_dir.
+
+    Public-ship: never hardcode a user slug. Honor the same env overrides the
+    hook honors so the backfill script runs in the same slot as production.
+    Precedence: MV3_MEMORY_DIR → MV3_PROJECTS_DIR/memory → PROJECTS_ROOT/home_slug/memory.
+    """
+    mem_override = os.environ.get("MV3_MEMORY_DIR", "").strip()
+    if mem_override:
+        return Path(mem_override).expanduser()
+    proj_override = os.environ.get("MV3_PROJECTS_DIR", "").strip()
+    if proj_override:
+        return Path(proj_override).expanduser() / "memory"
+    projects_root = Path(
+        os.environ.get("MV3_PROJECTS_ROOT", "~/.claude/projects")
+    ).expanduser()
+    home_slug = "-" + str(Path.home()).strip("/").replace("/", "-")
+    return projects_root / home_slug / "memory"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -42,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         "--memory-dir",
         type=Path,
         default=None,
-        help="Memory directory to sweep (default: ~/.claude/projects/-Users-yonghaekim/memory/)",
+        help="Memory directory to sweep (default: derived from $HOME via MV3_PROJECTS_ROOT/home_slug/memory; respects MV3_MEMORY_DIR / MV3_PROJECTS_DIR overrides).",
     )
     parser.add_argument(
         "--dry-run",

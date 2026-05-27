@@ -199,3 +199,61 @@ def test_backfill_missing_memory_dir_returns_1(tmp_path):
 
     rc = mod.main(["--memory-dir", str(tmp_path / "does-not-exist")])
     assert rc == 1
+
+
+def test_backfill_default_memory_dir_uses_home(monkeypatch):
+    """Default memory dir must derive from $HOME, not hardcoded username slug.
+
+    Public-ship sanitize: forbids "-Users-yonghaekim" or any other hardcoded
+    user-slug literal. Mirrors session_memory_end._default_memory_dir's pattern.
+    """
+    import importlib.util
+    repo = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "contradiction_backfill",
+        repo / "scripts" / "contradiction_backfill.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # Clear any override env so we hit the home_slug default branch.
+    monkeypatch.delenv("MV3_MEMORY_DIR", raising=False)
+    monkeypatch.delenv("MV3_PROJECTS_DIR", raising=False)
+    monkeypatch.delenv("MV3_PROJECTS_ROOT", raising=False)
+
+    default = mod._default_memory_dir()
+    home = str(Path.home())
+
+    # Default must derive from the current $HOME (its slug form appears in the path).
+    expected_slug = "-" + home.strip("/").replace("/", "-")
+    assert expected_slug in str(default), (
+        f"Default memory dir {default} must derive from $HOME={home} "
+        f"(expected slug {expected_slug}), not a hardcoded user literal."
+    )
+    # And the literal author slug must not be present for any other user.
+    if expected_slug != "-Users-yonghaekim":
+        assert "-Users-yonghaekim" not in str(default), (
+            "hardcoded author slug '-Users-yonghaekim' detected — "
+            "must derive from Path.home()"
+        )
+
+
+def test_backfill_default_memory_dir_respects_env_overrides(monkeypatch, tmp_path):
+    """MV3_MEMORY_DIR / MV3_PROJECTS_DIR overrides honored (matches hook)."""
+    import importlib.util
+    repo = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "contradiction_backfill",
+        repo / "scripts" / "contradiction_backfill.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # MV3_MEMORY_DIR wins outright.
+    monkeypatch.setenv("MV3_MEMORY_DIR", str(tmp_path / "explicit"))
+    assert mod._default_memory_dir() == tmp_path / "explicit"
+
+    # MV3_PROJECTS_DIR appends /memory.
+    monkeypatch.delenv("MV3_MEMORY_DIR")
+    monkeypatch.setenv("MV3_PROJECTS_DIR", str(tmp_path / "slot"))
+    assert mod._default_memory_dir() == tmp_path / "slot" / "memory"
