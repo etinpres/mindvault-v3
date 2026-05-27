@@ -1,8 +1,8 @@
 # MindVault v3
 
-> Claude Code의 영구 기억 시스템. 4-layer 파이프라인으로 세션 요약 자동 주입 · 자연어 검색 · Memory Compiler · 자동 회수까지.
+> Claude Code의 영구 기억 시스템. 5-layer 파이프라인으로 세션 요약 자동 주입 · 자연어 검색 · Memory Compiler · 자동 회수 · 모순 감지까지.
 
-**v3.3.0** · Karpathy LLM-as-Compiler 패턴 실증 · macOS (Apple Silicon) · MIT license · 470 passed + 25 subtests
+**v3.4.0** · Karpathy LLM-as-Compiler 패턴 실증 · macOS (Apple Silicon) · MIT license · 533 passed + 25 subtests
 
 ---
 
@@ -10,11 +10,12 @@
 
 Claude Code는 매 세션마다 컨텍스트 윈도우가 초기화됩니다. 어제 결정한 사실, 만들어 둔 CLI 위치, 진행 중인 프로젝트 상태 — 다음 세션을 열면 모두 사라집니다.
 
-MindVault v3는 그 망각의 빈 자리를 세 축으로 메웁니다:
+MindVault v3는 그 망각의 빈 자리를 네 축으로 메웁니다:
 
 1. **세션 검색** — 모든 과거 .jsonl 로그를 SQLite FTS5 + 임베딩으로 인덱싱, `/recall` 자연어 검색
 2. **메모리 회수** — UserPromptSubmit 마다 hybrid 검색으로 관련 메모리를 system-reminder에 자동 주입
 3. **자동 컴파일** — SessionEnd 마다 로컬 Gemma가 그 세션에서 영구로 남길 가치가 있는 결정/노하우/사실을 추출, 검토 후 영구 메모리에 진입
+4. **모순 감지 (v3.4+)** — 신규 메모리가 기존과 충돌 (metric 갱신·결정 반전·사실 정정) 시 Gemma 4-way 분류로 검출, 검토 후 신규가 옛 항목 deprecate / 본문 update / dismiss
 
 로컬 Gemma + Arctic-ko 임베딩 서버라 API 비용 0원, 데이터 외부 전송 없음.
 
@@ -42,7 +43,7 @@ MindVault v3는 그 망각의 빈 자리를 세 축으로 메웁니다:
 | **Recall** | UserPromptSubmit 시 hybrid 검색으로 관련 메모리를 자동 회수해 `system-reminder`로 주입. |
 | **Compile** | SessionEnd 시 Gemma가 로그를 읽고 새 메모리 후보를 `_procedural/_staged/` 에 자동 추출. |
 
-## 4-Layer 아키텍처
+## 5-Layer 아키텍처
 
 | Layer | 책임 |
 |---|---|
@@ -50,6 +51,7 @@ MindVault v3는 그 망각의 빈 자리를 세 축으로 메웁니다:
 | **L2 — `/recall` 자연어 검색** | JSONL FTS5 + Gemma 재순위 (sessions), Arctic-ko 임베딩 + FTS5 hybrid RRF (memory) |
 | **L3 — Memory Compiler** | SessionEnd → Gemma 정제 → `memory/_procedural/_staged/` → `/memory_review` 승인 후 영구 진입 |
 | **L4 — UserPromptSubmit hook** | 매 메시지 hybrid 검색 → 관련 메모리 system-reminder 주입. raw cosine 게이트 + query intent classifier가 잡담 차단 (false positive 0%) |
+| **L5 — Contradiction Detection (v3.4+)** | 신규 메모리가 기존과 충돌 (metric 갱신·결정 반전·사실 정정) 시 Gemma 4-way 분류로 자동 검출. `python -m src.contradiction_review_cli` 로 검토 후 신규가 옛 항목 deprecate / 본문 update / dismiss. `deprecated_by` 메모리는 L4 회수 시 raw_cosine + score 둘 다 × 0.3 감쇠 |
 
 ## v3 본체 (Sprint 13~16 + NEXT-1~20)
 
