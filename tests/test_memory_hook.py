@@ -244,5 +244,67 @@ class TestFormatOutputSanitize(unittest.TestCase):
         self.assertIn("normal — 한국어 OK", out)
 
 
+class TestRecalledIdsMetric(unittest.TestCase):
+    """NEXT-37 (회수 메모리 활용률 측정 Phase 1A) — _metric dict 에
+    recalled_ids: [name|path] 가 기록돼야 self_eval 분석 스크립트가
+    회수→답변 활용도 lemma overlap / citation 매칭을 돌릴 수 있음.
+
+    name 우선, name 비면 path fallback. 빈 results 면 빈 list.
+    """
+
+    def _load_hook_module(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("hk_recalled_ids", str(HOOK))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _run_with_fake_recall(self, fake_results, prompt="충분히 긴 쿼리 — recalled_ids 측정 검증"):
+        import io
+        from unittest.mock import patch
+
+        hk = self._load_hook_module()
+        for d in hk.SCRIPTS_DIRS:
+            if d.is_dir() and str(d) not in sys.path:
+                sys.path.insert(0, str(d))
+        import memory_search
+
+        metric_calls: list[dict] = []
+        with patch.object(memory_search, "recall_memory", return_value=fake_results), \
+             patch.object(hk, "_metric", side_effect=lambda d: metric_calls.append(d)), \
+             patch.object(hk, "_spawn_reindex", side_effect=lambda: None), \
+             patch.object(hk, "_mtime_changed", return_value=False), \
+             patch.object(sys, "stdin", io.StringIO(json.dumps({"prompt": prompt}))):
+            rc = hk.main()
+        self.assertEqual(rc, 0)
+        return metric_calls
+
+    def test_name_priority_and_path_fallback(self):
+        fake = [
+            {"name": "project-mindvault", "path": "/a/proj.md", "score": 0.82, "source": ["vec"]},
+            {"name": "", "path": "/c/orphan.md", "score": 0.61, "source": ["fts"]},
+            {"name": "feedback-x", "score": 0.50, "source": ["fts"]},
+        ]
+        calls = self._run_with_fake_recall(fake)
+        recalls = [m for m in calls if m.get("kind") == "recall"]
+        self.assertEqual(len(recalls), 1, f"recall metric 1건 기대: {calls}")
+        m = recalls[0]
+        self.assertIn("recalled_ids", m, f"recalled_ids field 누락: {sorted(m.keys())}")
+        self.assertEqual(
+            m["recalled_ids"],
+            ["project-mindvault", "/c/orphan.md", "feedback-x"],
+            f"name 우선 + path fallback 실패: {m['recalled_ids']}",
+        )
+        self.assertEqual(m["picked"], 3, "picked 와 recalled_ids 길이 일치 검증")
+        self.assertEqual(len(m["recalled_ids"]), m["picked"])
+
+    def test_empty_results_empty_list(self):
+        calls = self._run_with_fake_recall([])
+        recalls = [m for m in calls if m.get("kind") == "recall"]
+        self.assertEqual(len(recalls), 1)
+        self.assertEqual(recalls[0]["recalled_ids"], [])
+        self.assertEqual(recalls[0]["picked"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

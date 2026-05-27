@@ -405,6 +405,9 @@ def main() -> int:
             "has_hint": has_hint,
             "intent": intent_label,
             "intent_matched": intent_match[:3],
+            "recalled_ids": [
+                (r.get("name") or r.get("path", "")) for r in results
+            ],
         })
         _debug(
             f"query_len={len(prompt)} picked={len(results)} elapsed_ms={elapsed_ms}"
