@@ -57,13 +57,25 @@ DEPRECATED_DECAY = 0.3
 
 
 def _is_deprecated(path: Path) -> bool:
-    """frontmatter 의 deprecated_by 필드 검출. 첫 1KB 만 읽음 (hot path)."""
+    """frontmatter 의 deprecated_by 필드 검출. body 무시. 첫 2KB 만 읽음.
+
+    v3.4 review fix:
+      - I1: body 안 `deprecated_by: [...]` 리터럴 false positive 차단 — frontmatter 블록 안만 검사.
+      - I2: block-style YAML list (`deprecated_by:\\n  - foo`) 도 매칭. T7 writer 는 flow style 만
+        쓰지만 수동 편집 메모리는 block style 일 수 있음.
+    """
     try:
         with path.open("r", encoding="utf-8", errors="replace") as f:
-            head = f.read(1024)
+            head = f.read(2048)
     except OSError:
         return False
-    return bool(re.search(r"^deprecated_by:\s*\[", head, re.MULTILINE))
+    # frontmatter 블록 추출: ---\n...\n---
+    m = re.match(r"^---\n(.*?)\n---\n", head, re.DOTALL)
+    if not m:
+        return False
+    fm = m.group(1)
+    # flow style (`deprecated_by: [...]`) + block style (`deprecated_by:\n  - ...`) 둘 다 매칭.
+    return bool(re.search(r"^deprecated_by:\s*(\[|\n\s+-)", fm, re.MULTILINE))
 
 
 def _apply_deprecation_decay(path: Path, original_score: float) -> float:
@@ -592,10 +604,19 @@ def recall_memory(
             if score_threshold > 0 and info["score"] < score_threshold:
                 continue
             kept.append((path, info, raw))
-        # T8: deprecated_by 메모리 score × 0.3 감쇠 (raw_cosine 은 그대로 — 게이트
-        # 통과는 유지하되 sort 동률 시 밀려나도록).
+        # T8 (v3.4 review fix C1): deprecated_by 메모리는 score + raw_cosine 동시 감쇠.
+        # 이전엔 score 만 감쇠했으나 sort key 가 (raw_cosine, score) 라 primary key
+        # 가 반응 안 했다 (raw=0.78 deprecated 가 raw=0.74 fresh 를 항상 이김).
+        # raw_cosine_min 게이트 통과 후 적용 — 게이트 영향 없음.
+        decayed_kept = []
         for _path, _info, _raw in kept:
-            _info["score"] = _apply_deprecation_decay(Path(_path), _info["score"])
+            if _is_deprecated(Path(_path)):
+                _info["score"] *= DEPRECATED_DECAY
+                _raw *= DEPRECATED_DECAY
+                if _path in raw_cosine_map:
+                    raw_cosine_map[_path] = _raw
+            decayed_kept.append((_path, _info, _raw))
+        kept = decayed_kept
         # 정렬: raw cosine 우선 (절대 관련도) → 동률 시 normalize score
         kept.sort(key=lambda x: (x[2], x[1]["score"]), reverse=True)
         kept = kept[:top_k]
