@@ -50,6 +50,11 @@ SELF_AFFIRMING_RE = re.compile(
 )
 SELF_AFFIRMING_MIN_HITS = 2
 
+# NEXT-37 Phase 1B — 형 운영 룰 (CLAUDE.md "회수 알림 규칙"): 회수 결과 활용 시
+# 응답 첫 줄에 "→ 메모리 회수: <name>" 한 줄 명시. assistant text 안 이 marker
+# 발견 = LLM 이 회수 결과를 explicit 알림 (id mention 없는 경우의 약한 신호).
+RECALL_MARKER_RE = re.compile(r"→\s*메모리\s*회수[::]", re.IGNORECASE)
+
 
 def _debug(msg: str) -> None:
     try:
@@ -716,6 +721,154 @@ def analyze_recent(
     }
 
 
+def next_assistant_text(
+    turns: list[dict], recall_ts: float, window_sec: int = 300
+) -> str | None:
+    """recall_ts 직후 첫 assistant turn text. window_sec 안 발견 못 하면 None.
+
+    측정 의도 (NEXT-37 Phase 1B): hook 회수 직후 즉시 답변에 cite 됐는가만
+    판정. 5분 이후 답변은 다른 발화 흐름으로 간주.
+    """
+    for t in turns:
+        if t["ts_unix"] <= recall_ts:
+            continue
+        if t["ts_unix"] - recall_ts > window_sec:
+            return None
+        if t["role"] == "assistant" and t.get("text"):
+            return t["text"]
+    return None
+
+
+def _id_to_match_token(rid: str) -> str:
+    """recalled_id → assistant text 안 substring 매칭용 token.
+
+    path 형이면 basename without `.md`, 그 외 (name 슬러그) 는 그대로.
+    """
+    if not rid:
+        return ""
+    if "/" in rid or rid.endswith(".md"):
+        from os.path import basename, splitext
+        return splitext(basename(rid))[0]
+    return rid
+
+
+def classify_recall_utilization(
+    assistant_text: str | None,
+    recalled_ids: list[str],
+) -> dict:
+    """답변이 회수 메모리를 cite 했는지 분류.
+
+    status:
+    - "cited": 답변에 id substring 발견 (case-insensitive)
+    - "marker_only": id mention 없지만 "→ 메모리 회수:" alert 라인 발견
+    - "unused": 둘 다 없음, 답변은 존재
+    - "no_response": 답변 없음 (5분 window 안 assistant turn 없음)
+    """
+    if assistant_text is None:
+        return {
+            "status": "no_response", "cited_ids": [], "has_recall_marker": False,
+        }
+    text_lower = assistant_text.lower()
+    has_marker = bool(RECALL_MARKER_RE.search(assistant_text))
+    cited: list[str] = []
+    for rid in recalled_ids:
+        token = _id_to_match_token(rid).lower()
+        if not token:
+            continue
+        if token in text_lower:
+            cited.append(rid)
+    if cited:
+        status = "cited"
+    elif has_marker:
+        status = "marker_only"
+    else:
+        status = "unused"
+    return {
+        "status": status,
+        "cited_ids": cited,
+        "has_recall_marker": has_marker,
+    }
+
+
+def recall_utilization(
+    metrics_path: Path = DEFAULT_METRICS,
+    projects_root: Path = DEFAULT_PROJECTS_ROOT,
+    hours_back: int = 168,
+    use_cache: bool = True,
+) -> dict:
+    """NEXT-37 Phase 1B — 최근 N 시간 recall 이벤트의 답변 활용도 분석.
+
+    recalled_ids 보유 event (Phase 1A 이후) 만 대상. 같은 session jsonl 의
+    recall_ts 직후 5분 안 첫 assistant text 와 매칭 → cited / marker_only /
+    unused / no_response 4-bucket.
+
+    반환:
+    - hours_back, since_unix
+    - total_with_ids: recalled_ids 보유 event 수
+    - by_status: bucket count
+    - utilization_rate_strict: cited / judged (no_response 제외)
+    - utilization_rate_lenient: (cited + marker_only) / judged
+    - per_event_sample: 최대 10건
+    """
+    since = time.time() - hours_back * 3600
+    events = load_recall_events(metrics_path, since_unix=since)
+    events_with_ids = [
+        e for e in events
+        if isinstance(e.get("recalled_ids"), list) and e["recalled_ids"]
+    ]
+
+    all_turns: list[dict] = []
+    if use_cache:
+        try:
+            from turns_cache import get_turns_since  # noqa: WPS433
+            all_turns = get_turns_since(since, projects_root=projects_root)
+        except Exception as e:
+            _debug(f"turns_cache fail in recall_utilization: {e}")
+            all_turns = []
+    if not all_turns:
+        for jp in iter_session_jsonl_paths(projects_root):
+            all_turns.extend(load_turns(jp))
+        all_turns.sort(key=lambda t: t["ts_unix"])
+
+    by_status: dict[str, int] = {
+        "cited": 0, "marker_only": 0, "unused": 0, "no_response": 0,
+    }
+    per_event: list[dict] = []
+    for e in events_with_ids:
+        ts_unix = e["_ts_unix"]
+        window = [
+            t for t in all_turns if ts_unix - 1 <= t["ts_unix"] <= ts_unix + 1800
+        ]
+        a_text = next_assistant_text(window, ts_unix)
+        cls = classify_recall_utilization(a_text, e["recalled_ids"])
+        by_status[cls["status"]] += 1
+        per_event.append({
+            "ts": e.get("ts"),
+            "recalled_ids": e["recalled_ids"],
+            "status": cls["status"],
+            "cited_ids": cls["cited_ids"],
+            "has_recall_marker": cls["has_recall_marker"],
+        })
+
+    judged = (
+        by_status["cited"] + by_status["marker_only"] + by_status["unused"]
+    )
+    return {
+        "hours_back": hours_back,
+        "since_unix": since,
+        "total_with_ids": len(events_with_ids),
+        "by_status": by_status,
+        "utilization_rate_strict": (
+            (by_status["cited"] / judged) if judged else 0.0
+        ),
+        "utilization_rate_lenient": (
+            ((by_status["cited"] + by_status["marker_only"]) / judged)
+            if judged else 0.0
+        ),
+        "per_event_sample": per_event[:10],
+    }
+
+
 def _percentile(sorted_values: list[int], p: float) -> float:
     """단순 nearest-rank percentile. p ∈ [0, 100]. 빈 list 면 0."""
     if not sorted_values:
@@ -848,6 +1001,11 @@ def main() -> int:
         help="Bash tool_use 명령어 분포 + procedural memory coverage 측정",
     )
     parser.add_argument(
+        "--recall-utilization",
+        action="store_true",
+        help="NEXT-37 Phase 1B — recalled_ids 의 답변 cite 활용도 (cited / marker_only / unused / no_response)",
+    )
+    parser.add_argument(
         "--use-cache",
         dest="use_cache",
         action="store_true",
@@ -883,6 +1041,15 @@ def main() -> int:
         if args.procedural_audit:
             out = audit_procedural_coverage(
                 projects_root=args.projects_root, hours_back=args.hours
+            )
+            json.dump(out, sys.stdout, ensure_ascii=False, indent=2)
+            return 0
+        if args.recall_utilization:
+            out = recall_utilization(
+                metrics_path=args.metrics,
+                projects_root=args.projects_root,
+                hours_back=args.hours,
+                use_cache=args.use_cache,
             )
             json.dump(out, sys.stdout, ensure_ascii=False, indent=2)
             return 0

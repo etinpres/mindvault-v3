@@ -634,5 +634,214 @@ class TestClassifyUserTurns(unittest.TestCase):
             self.assertEqual(by["recall"]["count"], 1)
 
 
+class TestIdToMatchToken(unittest.TestCase):
+    """NEXT-37 Phase 1B — recalled_id → assistant text 매칭용 token 변환."""
+
+    def test_name_slug_unchanged(self):
+        from self_eval import _id_to_match_token
+        self.assertEqual(_id_to_match_token("project-mindvault"), "project-mindvault")
+
+    def test_path_basename_without_ext(self):
+        from self_eval import _id_to_match_token
+        self.assertEqual(
+            _id_to_match_token("/a/b/feedback_recalled_memory_weight.md"),
+            "feedback_recalled_memory_weight",
+        )
+
+    def test_relative_path_basename(self):
+        from self_eval import _id_to_match_token
+        self.assertEqual(
+            _id_to_match_token("memory/project_mindvault.md"),
+            "project_mindvault",
+        )
+
+    def test_empty_string(self):
+        from self_eval import _id_to_match_token
+        self.assertEqual(_id_to_match_token(""), "")
+
+
+class TestClassifyRecallUtilization(unittest.TestCase):
+    """NEXT-37 Phase 1B — 답변 cite 4-bucket 분류."""
+
+    def test_no_response_when_text_none(self):
+        from self_eval import classify_recall_utilization
+        out = classify_recall_utilization(None, ["project-mindvault"])
+        self.assertEqual(out["status"], "no_response")
+        self.assertEqual(out["cited_ids"], [])
+        self.assertFalse(out["has_recall_marker"])
+
+    def test_unused_when_no_mention_no_marker(self):
+        from self_eval import classify_recall_utilization
+        out = classify_recall_utilization(
+            "오늘 날씨 좋네", ["project-mindvault", "feedback-x"]
+        )
+        self.assertEqual(out["status"], "unused")
+        self.assertEqual(out["cited_ids"], [])
+
+    def test_marker_only_when_alert_but_no_id_mention(self):
+        from self_eval import classify_recall_utilization
+        out = classify_recall_utilization(
+            "→ 메모리 회수: 관련 메모 없음. 본 답변은 신규 작업.",
+            ["project-mindvault"],
+        )
+        self.assertEqual(out["status"], "marker_only")
+        self.assertEqual(out["cited_ids"], [])
+        self.assertTrue(out["has_recall_marker"])
+
+    def test_cited_when_id_substring_found(self):
+        from self_eval import classify_recall_utilization
+        out = classify_recall_utilization(
+            "[[project-mindvault]] 의 v3.2.10 단락 보면...",
+            ["project-mindvault", "feedback-x"],
+        )
+        self.assertEqual(out["status"], "cited")
+        self.assertEqual(out["cited_ids"], ["project-mindvault"])
+
+    def test_cited_with_path_basename_match(self):
+        from self_eval import classify_recall_utilization
+        out = classify_recall_utilization(
+            "feedback_recalled_memory_weight 메모리에 적혀 있음",
+            ["/a/b/feedback_recalled_memory_weight.md"],
+        )
+        self.assertEqual(out["status"], "cited")
+        self.assertEqual(len(out["cited_ids"]), 1)
+
+    def test_cited_case_insensitive(self):
+        from self_eval import classify_recall_utilization
+        out = classify_recall_utilization(
+            "PROJECT-MINDVAULT 라고 대문자로 mention",
+            ["project-mindvault"],
+        )
+        self.assertEqual(out["status"], "cited")
+
+
+class TestNextAssistantText(unittest.TestCase):
+    """NEXT-37 Phase 1B — recall_ts 직후 first assistant turn 추출."""
+
+    def test_returns_first_assistant_in_window(self):
+        from self_eval import next_assistant_text
+        turns = [
+            {"ts_unix": 100.0, "role": "user", "text": "질문"},
+            {"ts_unix": 101.0, "role": "assistant", "text": "첫 답변"},
+            {"ts_unix": 110.0, "role": "assistant", "text": "두번째"},
+        ]
+        self.assertEqual(next_assistant_text(turns, 100.5), "첫 답변")
+
+    def test_skips_turns_before_recall_ts(self):
+        from self_eval import next_assistant_text
+        turns = [
+            {"ts_unix": 50.0, "role": "assistant", "text": "옛날"},
+            {"ts_unix": 200.0, "role": "assistant", "text": "새 답변"},
+        ]
+        self.assertEqual(next_assistant_text(turns, 100.0), "새 답변")
+
+    def test_returns_none_beyond_window(self):
+        from self_eval import next_assistant_text
+        turns = [
+            {"ts_unix": 1000.0, "role": "assistant", "text": "너무 늦음"},
+        ]
+        # window_sec=300 default. recall_ts=100 → 1000-100=900 > 300 → None
+        self.assertIsNone(next_assistant_text(turns, 100.0))
+
+    def test_skips_user_turns(self):
+        from self_eval import next_assistant_text
+        turns = [
+            {"ts_unix": 101.0, "role": "user", "text": "후속"},
+            {"ts_unix": 102.0, "role": "assistant", "text": "답"},
+        ]
+        self.assertEqual(next_assistant_text(turns, 100.0), "답")
+
+    def test_skips_empty_text_assistant(self):
+        from self_eval import next_assistant_text
+        turns = [
+            {"ts_unix": 101.0, "role": "assistant", "text": ""},
+            {"ts_unix": 102.0, "role": "assistant", "text": "실제 답"},
+        ]
+        self.assertEqual(next_assistant_text(turns, 100.0), "실제 답")
+
+
+class TestRecallUtilizationEndToEnd(unittest.TestCase):
+    """NEXT-37 Phase 1B — fake metrics + fake jsonl 1쌍 → 분류 1건 확인."""
+
+    def test_single_cited_event(self):
+        from self_eval import recall_utilization
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            data = tmp_p / "data"
+            projects = tmp_p / "projects" / "-Users-x"
+            data.mkdir(parents=True)
+            projects.mkdir(parents=True)
+            metrics = data / "metrics.jsonl"
+            # tz-agnostic test: metrics ts 에도 Z 명시. production hook 은 naive
+            # local time 으로 박지만, jsonl Z 와 같은 unix 가 나오게 하려면 KST
+            # 환경에서만 동작. CI/다른 tz 격리 위해 둘 다 UTC Z 통일.
+            metrics.write_text(json.dumps({
+                "ts": "2099-01-01T00:00:00Z",
+                "kind": "recall",
+                "picked": 1,
+                "recalled_ids": ["project-mindvault"],
+            }) + "\n", encoding="utf-8")
+            (projects / "sess-1.jsonl").write_text(
+                json.dumps({
+                    "type": "user", "timestamp": "2099-01-01T00:00:00Z",
+                    "message": {"content": "v4 비전 어디까지 했지"},
+                }) + "\n"
+                + json.dumps({
+                    "type": "assistant", "timestamp": "2099-01-01T00:00:05Z",
+                    "message": {"content": "[[project-mindvault]] 의 v4 단락 보면..."},
+                }) + "\n",
+                encoding="utf-8",
+            )
+            out = recall_utilization(
+                metrics_path=metrics,
+                projects_root=tmp_p / "projects",
+                hours_back=24 * 365 * 200,
+                use_cache=False,
+            )
+            self.assertEqual(out["total_with_ids"], 1)
+            self.assertEqual(out["by_status"]["cited"], 1)
+            self.assertEqual(out["by_status"]["unused"], 0)
+            self.assertEqual(out["utilization_rate_strict"], 1.0)
+            self.assertEqual(
+                out["per_event_sample"][0]["cited_ids"], ["project-mindvault"]
+            )
+
+    def test_unused_when_text_unrelated(self):
+        from self_eval import recall_utilization
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            data = tmp_p / "data"
+            projects = tmp_p / "projects" / "-Users-x"
+            data.mkdir(parents=True)
+            projects.mkdir(parents=True)
+            metrics = data / "metrics.jsonl"
+            metrics.write_text(json.dumps({
+                "ts": "2099-01-02T00:00:00Z",
+                "kind": "recall",
+                "picked": 1,
+                "recalled_ids": ["project-mindvault"],
+            }) + "\n", encoding="utf-8")
+            (projects / "sess-2.jsonl").write_text(
+                json.dumps({
+                    "type": "user", "timestamp": "2099-01-02T00:00:00Z",
+                    "message": {"content": "오늘 점심 뭐 먹지"},
+                }) + "\n"
+                + json.dumps({
+                    "type": "assistant", "timestamp": "2099-01-02T00:00:05Z",
+                    "message": {"content": "라면 어때"},
+                }) + "\n",
+                encoding="utf-8",
+            )
+            out = recall_utilization(
+                metrics_path=metrics,
+                projects_root=tmp_p / "projects",
+                hours_back=24 * 365 * 200,
+                use_cache=False,
+            )
+            self.assertEqual(out["by_status"]["unused"], 1)
+            self.assertEqual(out["by_status"]["cited"], 0)
+            self.assertEqual(out["utilization_rate_strict"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()
