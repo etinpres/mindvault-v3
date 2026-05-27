@@ -198,7 +198,7 @@ def _call_gemma_for_classify(prompt: str, max_tokens: int = 400) -> str | None:
 def _strip_code_fences(text: str) -> str:
     """```json\\n{...}\\n``` 같은 마크다운 fence 제거."""
     text = text.strip()
-    m = re.match(r"^```(?:json)?\s*\n(.*?)\n```\s*$", text, re.DOTALL)
+    m = re.match(r"^```(?:json)?\s*(.*?)\s*```\s*$", text, re.DOTALL)
     return m.group(1) if m else text
 
 

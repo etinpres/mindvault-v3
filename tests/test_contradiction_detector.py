@@ -158,3 +158,27 @@ def test_classify_strips_code_fences(monkeypatch):
         lambda p, max_tokens=400: '```json\n{"kind": "fact_correction", "reason": "r", "confidence": 0.8}\n```',
     )
     assert _classify_pair("a", "b")["kind"] == "fact_correction"
+
+
+def test_classify_strips_fences_without_trailing_newline(monkeypatch):
+    """Gemma sometimes emits ```json\\n{...}``` (no \\n before closing fence)."""
+    from src.contradiction_detector import _classify_pair
+    monkeypatch.setattr(
+        "src.contradiction_detector._call_gemma_for_classify",
+        lambda p, max_tokens=400: '```json\n{"kind": "metric_update", "reason": "r", "confidence": 0.8}```',
+    )
+    result = _classify_pair("a", "b")
+    assert result is not None, "should strip fence even without trailing newline"
+    assert result["kind"] == "metric_update"
+
+
+def test_classify_strips_inline_fences(monkeypatch):
+    """Inline single-line fence: ```{...}```"""
+    from src.contradiction_detector import _classify_pair
+    monkeypatch.setattr(
+        "src.contradiction_detector._call_gemma_for_classify",
+        lambda p, max_tokens=400: '```{"kind": "fact_correction", "reason": "r", "confidence": 0.9}```',
+    )
+    result = _classify_pair("a", "b")
+    assert result is not None, "should strip inline fence"
+    assert result["kind"] == "fact_correction"
