@@ -182,3 +182,118 @@ def test_classify_strips_inline_fences(monkeypatch):
     result = _classify_pair("a", "b")
     assert result is not None, "should strip inline fence"
     assert result["kind"] == "fact_correction"
+
+
+def test_detect_end_to_end_metric_drift(tmp_path, write_memory, monkeypatch):
+    from src.contradiction_detector import detect_contradictions, ContradictionKind
+
+    old = write_memory(tmp_path, "feedback_old_metric.md",
+                       "name: old-metric\ndescription: 회수율\ntype: feedback",
+                       "hit rate 65% (n=2,397)")
+
+    monkeypatch.setattr(
+        "src.contradiction_detector._recall_candidates",
+        lambda c, m, top_k=5: [(old, 0.85)],
+    )
+    monkeypatch.setattr(
+        "src.contradiction_detector._classify_pair",
+        lambda new, old_body: {"kind": "metric_update", "reason": "65 → 66.3", "confidence": 0.9},
+    )
+
+    candidate = {"slug": "new-metric", "title": "회수율 재측",
+                 "body": "hit rate 66.3% (n=3,193)"}
+    result = detect_contradictions(candidate, tmp_path)
+
+    assert len(result) == 1
+    assert result[0].kind == ContradictionKind.METRIC_UPDATE
+    assert result[0].confidence == 0.9
+    assert "65" in result[0].old_body_excerpt
+    assert "66.3" in result[0].new_body_excerpt
+    # excerpt is BODY_EXCERPT_CHARS-bounded
+    assert len(result[0].new_body_excerpt) <= 200
+    assert len(result[0].old_body_excerpt) <= 200
+
+
+def test_detect_filters_low_confidence(tmp_path, write_memory, monkeypatch):
+    from src.contradiction_detector import detect_contradictions
+    old = write_memory(tmp_path, "x.md", "name: x\ntype: feedback", "old text")
+    monkeypatch.setattr(
+        "src.contradiction_detector._recall_candidates",
+        lambda c, m, top_k=5: [(old, 0.7)],
+    )
+    monkeypatch.setattr(
+        "src.contradiction_detector._classify_pair",
+        lambda new, old_body: {"kind": "fact_correction", "reason": "?", "confidence": 0.5},
+    )
+    assert detect_contradictions({"slug": "y", "body": "new", "title": "Y"}, tmp_path) == []
+
+
+def test_detect_filters_no_conflict(tmp_path, write_memory, monkeypatch):
+    from src.contradiction_detector import detect_contradictions
+    old = write_memory(tmp_path, "x.md", "name: x\ntype: feedback", "old text")
+    monkeypatch.setattr(
+        "src.contradiction_detector._recall_candidates",
+        lambda c, m, top_k=5: [(old, 0.85)],
+    )
+    monkeypatch.setattr(
+        "src.contradiction_detector._classify_pair",
+        lambda new, old_body: {"kind": "no_conflict", "reason": "주제 다름", "confidence": 0.95},
+    )
+    assert detect_contradictions({"slug": "y", "body": "new", "title": "Y"}, tmp_path) == []
+
+
+def test_detect_handles_classify_failure(tmp_path, write_memory, monkeypatch):
+    """_classify_pair returning None → skip that candidate, don't crash."""
+    from src.contradiction_detector import detect_contradictions
+    old = write_memory(tmp_path, "x.md", "name: x\ntype: feedback", "old text")
+    monkeypatch.setattr(
+        "src.contradiction_detector._recall_candidates",
+        lambda c, m, top_k=5: [(old, 0.85)],
+    )
+    monkeypatch.setattr(
+        "src.contradiction_detector._classify_pair",
+        lambda new, old_body: None,
+    )
+    assert detect_contradictions({"slug": "y", "body": "new", "title": "Y"}, tmp_path) == []
+
+
+def test_append_to_review_queue_writes_jsonl(tmp_path, monkeypatch):
+    from src.contradiction_detector import (
+        append_to_review_queue, Contradiction, ContradictionKind,
+    )
+    monkeypatch.setenv("MV3_RUNTIME_DIR", str(tmp_path))
+
+    c = [Contradiction(
+        target_path=tmp_path / "a.md", target_name="a",
+        kind=ContradictionKind.METRIC_UPDATE, reason="r", confidence=0.9,
+        new_body_excerpt="new ex", old_body_excerpt="old ex",
+    )]
+    out = append_to_review_queue("new-x", c, new_path=tmp_path / "new_x.md")
+
+    assert out.exists()
+    import json
+    line = json.loads(out.read_text(encoding="utf-8").strip())
+    assert line["new_slug"] == "new-x"
+    assert line["new_path"].endswith("new_x.md")
+    assert line["kind"] == "metric_update"
+    assert line["resolved"] is False
+    assert line["confidence"] == 0.9
+    assert line["target_name"] == "a"
+
+
+def test_append_to_review_queue_appends_multiple_calls(tmp_path, monkeypatch):
+    """Multiple calls append to same file, don't overwrite."""
+    from src.contradiction_detector import (
+        append_to_review_queue, Contradiction, ContradictionKind,
+    )
+    monkeypatch.setenv("MV3_RUNTIME_DIR", str(tmp_path))
+
+    c1 = [Contradiction(target_path=tmp_path/"a.md", target_name="a",
+                        kind=ContradictionKind.METRIC_UPDATE, reason="r1", confidence=0.9)]
+    c2 = [Contradiction(target_path=tmp_path/"b.md", target_name="b",
+                        kind=ContradictionKind.FACT_CORRECTION, reason="r2", confidence=0.8)]
+    append_to_review_queue("x", c1, new_path=tmp_path / "x.md")
+    out = append_to_review_queue("y", c2, new_path=tmp_path / "y.md")
+
+    lines = out.read_text(encoding="utf-8").strip().split("\n")
+    assert len(lines) == 2

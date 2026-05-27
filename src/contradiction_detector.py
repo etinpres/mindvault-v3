@@ -13,6 +13,18 @@ from pathlib import Path
 from src.memory_compiler import GEMMA_MODEL, GEMMA_TIMEOUT, GEMMA_URL
 
 
+def _runtime_dir() -> Path:
+    """런타임 데이터 디렉토리 (debug.log, contradictions.jsonl). env 우선."""
+    env = os.environ.get("MV3_RUNTIME_DIR")
+    if env:
+        return Path(env)
+    return Path.home() / ".claude" / "mindvault-v3"
+
+
+CONFIDENCE_THRESHOLD = 0.7  # 미만은 review queue 제외 (false positive 회피)
+BODY_EXCERPT_CHARS = 200    # contradictions.jsonl 에 저장할 body 발췌 길이
+
+
 _CLASSIFY_PROMPT = """다음은 메모리 시스템의 두 항목입니다.
 새 항목이 기존 항목과 충돌하는지 분류하세요.
 
@@ -37,11 +49,8 @@ def _debug(msg: str) -> None:
 
     MV3_RUNTIME_DIR 환경변수가 있으면 그 경로 우선, 없으면 default.
     """
-    log_dir = os.environ.get("MV3_RUNTIME_DIR") or str(
-        Path.home() / ".claude" / "mindvault-v3"
-    )
     try:
-        log_path = Path(log_dir) / "debug.log"
+        log_path = _runtime_dir() / "debug.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         with log_path.open("a", encoding="utf-8") as f:
@@ -73,18 +82,51 @@ def detect_contradictions(candidate: dict, mem_dir: Path) -> list[Contradiction]
 
     Args:
         candidate: {
-            "slug": str,           # bare slug, no type prefix
+            "slug": str,                    # bare slug, no type prefix
             "title": str,
             "body": str,
             "type": str (optional),
-            "path": Path | str (optional),  # explicit self-path for exclusion
+            "path": Path | str (optional), # explicit self-path for exclusion
         }
-        mem_dir: memory/*.md 위치
+        mem_dir: memory/*.md 위치 (recall 결과를 이 디렉토리 subtree 로 제한)
 
     Returns:
-        confidence ≥ CONFIDENCE_THRESHOLD 이고 kind != NO_CONFLICT 만.
+        confidence ≥ CONFIDENCE_THRESHOLD 이고 kind != NO_CONFLICT 인 항목만.
+        Gemma 호출 실패 / parse 실패 / low confidence / no_conflict 는 모두 silent skip.
     """
-    return []  # 후속 tasks (T2~T4) 에서 채움
+    candidates = _recall_candidates(candidate, mem_dir, top_k=5)
+    if not candidates:
+        return []
+
+    new_body = candidate.get("body", "")
+    if not new_body:
+        return []
+
+    contradictions: list[Contradiction] = []
+    for path, _score in candidates:
+        try:
+            old_body = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+
+        result = _classify_pair(new_body, old_body)
+        if not result:
+            continue
+        if result["kind"] == ContradictionKind.NO_CONFLICT.value:
+            continue
+        if result["confidence"] < CONFIDENCE_THRESHOLD:
+            continue
+
+        contradictions.append(Contradiction(
+            target_path=path,
+            target_name=path.stem,
+            kind=ContradictionKind(result["kind"]),
+            reason=result["reason"],
+            confidence=result["confidence"],
+            new_body_excerpt=new_body[:BODY_EXCERPT_CHARS],
+            old_body_excerpt=old_body[:BODY_EXCERPT_CHARS],
+        ))
+    return contradictions
 
 
 def _hybrid_search(query: str, mem_dir: Path, top_k: int = 5) -> list[tuple[Path, float]]:
@@ -234,3 +276,34 @@ def _classify_pair(new_body: str, old_body: str) -> dict | None:
         parsed["confidence"] = 0.5
 
     return parsed
+
+
+def append_to_review_queue(
+    candidate_slug: str,
+    contradictions: list[Contradiction],
+    new_path: Path,
+) -> Path:
+    """Contradiction 항목들을 contradictions.jsonl 에 append.
+
+    review CLI (T6/T7) 가 이 파일을 읽어 unresolved 항목 노출.
+    """
+    out = _runtime_dir() / "contradictions.jsonl"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+    with out.open("a", encoding="utf-8") as f:
+        for c in contradictions:
+            f.write(json.dumps({
+                "ts": ts,
+                "new_slug": candidate_slug,
+                "new_path": str(new_path),
+                "target_name": c.target_name,
+                "target_path": str(c.target_path),
+                "kind": c.kind.value,
+                "reason": c.reason,
+                "confidence": c.confidence,
+                "new_excerpt": c.new_body_excerpt,
+                "old_excerpt": c.old_body_excerpt,
+                "resolved": False,
+            }, ensure_ascii=False) + "\n")
+    return out
