@@ -284,14 +284,25 @@ def _format_output(results: list[dict]) -> str:
     옛 format ("# 메모리 회수 (Layer 4 hybrid)") 은 self_eval.py 의
     RECALL_INJECTION_HEADERS 가 backward compat 으로 retroactive 분석 보존.
     """
+    # Round 1 fix L2: 빈 results 직접 호출 시 header+contract 만 박혀
+    # LLM 이 false self-report 하는 시나리오 차단. main() 도 이미 가드
+    # 하지만 helper 자체 invariant 보장.
+    if not results:
+        return ""
     lines = [
         "<system-reminder>",
         "MEMORY CONTEXT (다음 fact 를 본 답변 reasoning 에 반드시 통합):",
         "",
     ]
     for r in results:
-        srcs = "+".join(r.get("source") or [])
-        name = _sanitize(r.get("name") or "(unnamed)")
+        # Round 1 fix L1: source label 도 _sanitize — sanitization contract
+        # 일관성. 현재는 internal label (vec/fts/alias) 만이라 exploitability
+        # 낮지만 contract 누락은 닫는다.
+        srcs = _sanitize("+".join(r.get("source") or []))
+        # Round 1 fix L3: name 안 ']' 가 들어가면 RECALLED_NAME_RE 가 첫 ']'
+        # 에서 끊겨 추출 실패. 안전한 escape 로 차단.
+        raw_name = r.get("name") or "(unnamed)"
+        name = _sanitize(raw_name.replace("]", ")"))
         desc = _sanitize(r.get("description") or "")
         snippet = _sanitize(r.get("snippet") or "")
         score = r.get("score", 0)

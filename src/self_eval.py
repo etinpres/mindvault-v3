@@ -30,6 +30,18 @@ DEFAULT_METRICS = DATA_DIR / "metrics.jsonl"
 DEFAULT_PROJECTS_ROOT = Path(os.environ.get("MV3_PROJECTS_ROOT", "~/.claude/projects")).expanduser()
 DEBUG_LOG = DATA_DIR / "debug.log"
 
+# Round 1 fix M3 — naive metrics ts 의 timezone 명시. production hook 가
+# `time.strftime("%Y-%m-%dT%H:%M:%S")` 로 local naive 박는데 시스템 TZ 가
+# Asia/Seoul 이 아니면 (CI / TZ=UTC) `dt.astimezone()` fallback 이 잘못된
+# unix 산출 → jsonl Z (UTC) 와 32400s skew. 명시 timezone 으로 차단.
+# env var 로 다른 환경 사용자 override.
+_NAIVE_TZ_NAME = os.environ.get("MV3_NAIVE_TZ", "Asia/Seoul")
+try:
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    _NAIVE_TZ_OBJ = _ZoneInfo(_NAIVE_TZ_NAME)
+except Exception:
+    _NAIVE_TZ_OBJ = None  # fallback: system local via dt.astimezone()
+
 # Sprint 15: hook 회수 직후 다음 사용자 turn 에서 자주 나타나는 negative cue 패턴.
 # 사용자가 "이거 관계없는데" 식으로 받아치면 그 회수는 false positive 강력 신호.
 # 단어 단위 안정 매칭 — 너무 짧은 부분 매칭(예: "없")으로 일반 부정문이 잡히지 않게
@@ -50,18 +62,27 @@ SELF_AFFIRMING_RE = re.compile(
 )
 SELF_AFFIRMING_MIN_HITS = 2
 
-# NEXT-37 Phase 1B — 형 운영 룰 (CLAUDE.md "회수 알림 규칙"): 회수 결과 활용 시
-# 응답 첫 줄에 "→ 메모리 회수: <name>" 한 줄 명시. assistant text 안 이 marker
-# 발견 = LLM 이 회수 결과를 explicit 알림 (id mention 없는 경우의 약한 신호).
-RECALL_MARKER_RE = re.compile(r"→\s*메모리\s*회수[::]", re.IGNORECASE)
+# NEXT-37 Phase 1B / Phase 2 — assistant 답변 안 marker 두 가지:
+# - 옛 (CLAUDE.md "회수 알림 규칙"): "→ 메모리 회수: <name>"
+# - 신규 (Phase 2 hook contract, Step 2 deploy 후): "회수 노트: <분석>"
+# 둘 중 하나라도 발견 = LLM 이 회수 결과를 explicit 알림 (id mention 없는
+# 경우의 약한 신호). 신규 marker 누락 시 Step 2 deploy 후 marker_only bucket
+# 이 0 으로 박혀 measurement 부정확.
+RECALL_MARKER_RE = re.compile(
+    r"(→\s*메모리\s*회수\s*[::]|회수\s*노트\s*[::])",
+    re.IGNORECASE,
+)
 
 # NEXT-37 Phase 1B retroactive — hook (hooks/memory-recall.py:_format_output)
 # 가 출력하는 system-reminder 블록의 고유 header. 옛 + 신규 두 format 모두
 # 인식해야 Step 2 deploy 후에도 retroactive 분석 가능.
 # - 옛 (Phase 2 이전): "# 메모리 회수 (Layer 4 hybrid)"
 # - 신규 (Phase 2, Step 2 이후): "MEMORY CONTEXT (다음 fact..."
+# Round 1 fix L5: 옛 header 를 prefix 로 단순화 — Sprint 초기 (Layer 4
+# hybrid) 빠진 변형 가능성 안전마진 커버. "# 메모리 회수" 단어 자체가 hook
+# 고유라 다른 system-reminder 와 충돌 위험 zero (real grep 검증).
 RECALL_INJECTION_HEADERS = (
-    "# 메모리 회수 (Layer 4 hybrid)",
+    "# 메모리 회수",
     "MEMORY CONTEXT (",
 )
 # hook 출력 line 형식 (두 format 모두):
@@ -88,6 +109,10 @@ def _parse_ts(ts: str) -> float | None:
     metrics.jsonl 는 "2026-05-23T01:58:34" (Z 없음, local time 가정).
     Claude JSONL 은 "2026-05-22T17:05:26.819Z" (UTC).
     둘 다 처리 — local naive 는 fromisoformat 으로, Z 는 +00:00 으로 치환.
+
+    Round 1 fix M3: naive ts 는 _NAIVE_TZ_OBJ (default Asia/Seoul) 명시
+    적용. dt.astimezone() 의 system TZ 의존 회피 — TZ=UTC 환경에서 metrics
+    naive 와 jsonl Z 의 32400s skew 방지. MV3_NAIVE_TZ env var 로 override.
     """
     if not ts:
         return None
@@ -96,8 +121,10 @@ def _parse_ts(ts: str) -> float | None:
             ts = ts[:-1] + "+00:00"
         dt = datetime.fromisoformat(ts)
         if dt.tzinfo is None:
-            # naive → local time 으로 간주
-            dt = dt.astimezone()
+            if _NAIVE_TZ_OBJ is not None:
+                dt = dt.replace(tzinfo=_NAIVE_TZ_OBJ)
+            else:
+                dt = dt.astimezone()  # fallback when zoneinfo unavailable
         return dt.timestamp()
     except (ValueError, TypeError):
         return None
@@ -843,13 +870,26 @@ def _id_to_match_token(rid: str) -> str:
     """recalled_id → assistant text 안 substring 매칭용 token.
 
     path 형이면 basename without `.md`, 그 외 (name 슬러그) 는 그대로.
+
+    Round 1 fix L4: splitext 대신 명시 `.md` 만 strip — multi-dot 파일
+    (`x.tar.gz`) 가 `x.tar` 로 잘못 잘리는 함정 차단. 메모리 관례상
+    `.md` 단일 확장자만이지만 안전마진.
     """
     if not rid:
         return ""
     if "/" in rid or rid.endswith(".md"):
-        from os.path import basename, splitext
-        return splitext(basename(rid))[0]
+        from os.path import basename
+        bn = basename(rid)
+        if bn.endswith(".md"):
+            return bn[:-3]
+        return bn
     return rid
+
+
+# Round 1 fix M2: substring match 최소 token 길이. "x", "ai" 같은 짧은
+# id 가 임의 영문 단어 (explain, said, ...) 안에 우연 매칭하는 false positive
+# 차단. 메모리 name 슬러그는 통상 3+ chars (실측 평균 20+).
+MIN_CITED_TOKEN_LEN = 3
 
 
 def classify_recall_utilization(
@@ -859,10 +899,16 @@ def classify_recall_utilization(
     """답변이 회수 메모리를 cite 했는지 분류.
 
     status:
-    - "cited": 답변에 id substring 발견 (case-insensitive)
-    - "marker_only": id mention 없지만 "→ 메모리 회수:" alert 라인 발견
+    - "cited": 답변에 id substring 발견 (case-insensitive, len ≥ MIN_CITED_TOKEN_LEN)
+    - "marker_only": id mention 없지만 marker (→ 메모리 회수: / 회수 노트:) 발견
     - "unused": 둘 다 없음, 답변은 존재
     - "no_response": 답변 없음 (5분 window 안 assistant turn 없음)
+
+    한계 (정직히):
+    - substring match — rephrase / 의역 시 false negative 가능 (실 활용률
+      lower bound). lemma overlap / semantic match 는 향후 escalate 영역.
+    - MIN_CITED_TOKEN_LEN 미만 token 은 false positive 회피 위해 skip —
+      극히 짧은 id 는 cited 검출 불가.
     """
     if assistant_text is None:
         return {
@@ -873,7 +919,7 @@ def classify_recall_utilization(
     cited: list[str] = []
     for rid in recalled_ids:
         token = _id_to_match_token(rid).lower()
-        if not token:
+        if len(token) < MIN_CITED_TOKEN_LEN:
             continue
         if token in text_lower:
             cited.append(rid)

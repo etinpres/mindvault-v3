@@ -28,6 +28,21 @@ class TestParseTs(unittest.TestCase):
         self.assertIsNone(_parse_ts(""))
         self.assertIsNone(_parse_ts("not a date"))
 
+    def test_naive_ts_uses_explicit_kst_not_system_tz_m3(self):
+        """Round 1 M3 — naive metrics ts 가 시스템 TZ 와 무관하게 명시
+        KST (Asia/Seoul) 로 해석돼야 jsonl Z (UTC) 와 같은 unix scale.
+        TZ=UTC 환경에서 32400s skew 차단.
+
+        '2026-01-01T09:00:00' (KST 9시) == '2026-01-01T00:00:00Z' (UTC 0시).
+        """
+        from self_eval import _parse_ts
+        naive = _parse_ts("2026-01-01T09:00:00")
+        utc = _parse_ts("2026-01-01T00:00:00Z")
+        self.assertIsNotNone(naive)
+        self.assertIsNotNone(utc)
+        # 같은 시점이라 unix 일치해야
+        self.assertAlmostEqual(naive, utc, delta=0.01)
+
 
 class TestNegativeCue(unittest.TestCase):
     def test_positive_cases(self):
@@ -659,6 +674,18 @@ class TestIdToMatchToken(unittest.TestCase):
         from self_eval import _id_to_match_token
         self.assertEqual(_id_to_match_token(""), "")
 
+    def test_multidot_md_strips_only_last_ext_l4(self):
+        """Round 1 L4 — splitext multi-dot 함정 차단. `x.tar.gz` 같은 multi-dot
+        가 메모리 관례엔 없지만 안전마진. `.md` 만 명시 strip."""
+        from self_eval import _id_to_match_token
+        # multi-dot path 가 들어와도 .md 만 떨어짐 (단일 .md 종료 시)
+        self.assertEqual(
+            _id_to_match_token("/a/b/foo.tar.gz"), "foo.tar.gz"
+        )
+        self.assertEqual(
+            _id_to_match_token("/a/b/foo.tar.gz.md"), "foo.tar.gz"
+        )
+
 
 class TestClassifyRecallUtilization(unittest.TestCase):
     """NEXT-37 Phase 1B — 답변 cite 4-bucket 분류."""
@@ -678,10 +705,23 @@ class TestClassifyRecallUtilization(unittest.TestCase):
         self.assertEqual(out["status"], "unused")
         self.assertEqual(out["cited_ids"], [])
 
-    def test_marker_only_when_alert_but_no_id_mention(self):
+    def test_marker_only_when_legacy_alert_but_no_id_mention(self):
         from self_eval import classify_recall_utilization
         out = classify_recall_utilization(
             "→ 메모리 회수: 관련 메모 없음. 본 답변은 신규 작업.",
+            ["project-mindvault"],
+        )
+        self.assertEqual(out["status"], "marker_only")
+        self.assertEqual(out["cited_ids"], [])
+        self.assertTrue(out["has_recall_marker"])
+
+    def test_marker_only_when_new_recall_note_but_no_id_mention(self):
+        """Phase 2 신규 marker '회수 노트: ...' 도 인식 — Step 2 deploy 후
+        assistant contract. 누락 시 marker_only bucket 이 0 으로 박혀
+        measurement 부정확."""
+        from self_eval import classify_recall_utilization
+        out = classify_recall_utilization(
+            "회수 노트: 위 메모리는 본 질문과 무관.\n\n실제 답변 본문...",
             ["project-mindvault"],
         )
         self.assertEqual(out["status"], "marker_only")
@@ -713,6 +753,28 @@ class TestClassifyRecallUtilization(unittest.TestCase):
             ["project-mindvault"],
         )
         self.assertEqual(out["status"], "cited")
+
+    def test_short_id_skipped_not_cited_m2(self):
+        """Round 1 M2 — len(token) < MIN_CITED_TOKEN_LEN 인 id 는
+        substring 매칭 skip. "x"·"ai" 같은 짧은 id 가 "explain"·"said"
+        같은 임의 영문 단어 안에 false positive 인 case 차단."""
+        from self_eval import classify_recall_utilization
+        out = classify_recall_utilization(
+            "explain daily gain — said the assistant",
+            ["x", "ai"],
+        )
+        self.assertEqual(out["status"], "unused")
+        self.assertEqual(out["cited_ids"], [])
+
+    def test_short_id_with_normal_id_partial_skip_m2(self):
+        """Round 1 M2 — 짧은 id 만 skip, 정상 id 는 그대로 매칭."""
+        from self_eval import classify_recall_utilization
+        out = classify_recall_utilization(
+            "project-mindvault 정상 mention",
+            ["x", "project-mindvault"],
+        )
+        self.assertEqual(out["status"], "cited")
+        self.assertEqual(out["cited_ids"], ["project-mindvault"])
 
 
 class TestNextAssistantText(unittest.TestCase):
@@ -901,6 +963,21 @@ class TestExtractRecalledIdsFromHookInjection(unittest.TestCase):
             "</system-reminder>"
         )
         self.assertEqual(extract_recalled_ids_from_hook_injection(text), [])
+
+    def test_header_prefix_matches_old_variant_l5(self):
+        """Round 1 L5 — header tuple 을 prefix 로 단순화해서 Sprint 초기
+        (Layer 4 hybrid) 빠진 변형도 매칭. 안전마진."""
+        from self_eval import extract_recalled_ids_from_hook_injection
+        # 옛 variant: (Layer 4 hybrid) 없는 경우
+        text = (
+            "<system-reminder>\n"
+            "# 메모리 회수\n"
+            "- **early-format** (score 0.7, vec) — Sprint 초기 wording\n"
+            "</system-reminder>"
+        )
+        self.assertEqual(
+            extract_recalled_ids_from_hook_injection(text), ["early-format"]
+        )
 
 
 class TestLoadRecallEventsFromTranscripts(unittest.TestCase):
