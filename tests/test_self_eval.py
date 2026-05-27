@@ -43,6 +43,61 @@ class TestParseTs(unittest.TestCase):
         # 같은 시점이라 unix 일치해야
         self.assertAlmostEqual(naive, utc, delta=0.01)
 
+    def test_invalid_tz_env_falls_back_to_utc_plus_9_a2(self):
+        """Round 2 A2 — MV3_NAIVE_TZ='Bad/Zone' 같은 invalid 시 system TZ
+        fallback 대신 hardcoded UTC+9 사용. ZoneInfo 실패해도 KST 일치."""
+        import os
+        # cache 비우기 — module-level dict 직접 manipulation
+        import self_eval
+        original_cache = dict(self_eval._NAIVE_TZ_CACHE)
+        original_env = os.environ.get("MV3_NAIVE_TZ")
+        try:
+            self_eval._NAIVE_TZ_CACHE.clear()
+            os.environ["MV3_NAIVE_TZ"] = "Bad/Zone/Does/Not/Exist"
+            naive = self_eval._parse_ts("2026-01-01T09:00:00")
+            utc = self_eval._parse_ts("2026-01-01T00:00:00Z")
+            self.assertAlmostEqual(naive, utc, delta=0.01,
+                                    msg="invalid zone 시 UTC+9 hardcoded 적용")
+        finally:
+            self_eval._NAIVE_TZ_CACHE.clear()
+            self_eval._NAIVE_TZ_CACHE.update(original_cache)
+            if original_env is None:
+                os.environ.pop("MV3_NAIVE_TZ", None)
+            else:
+                os.environ["MV3_NAIVE_TZ"] = original_env
+
+    def test_env_override_takes_effect_lazily_b5(self):
+        """Round 2 B5 — MV3_NAIVE_TZ env 변경이 lazy 적용 (module reload
+        없이). cache by env value 라 새 lookup."""
+        import os
+        import self_eval
+        original_cache = dict(self_eval._NAIVE_TZ_CACHE)
+        original_env = os.environ.get("MV3_NAIVE_TZ")
+        try:
+            self_eval._NAIVE_TZ_CACHE.clear()
+            # UTC env 로 변경 — naive '00:00:00' 이 UTC 0시 ↔ Z 0시 같음
+            os.environ["MV3_NAIVE_TZ"] = "UTC"
+            naive_utc = self_eval._parse_ts("2026-01-01T00:00:00")
+            utc = self_eval._parse_ts("2026-01-01T00:00:00Z")
+            self.assertAlmostEqual(
+                naive_utc, utc, delta=0.01,
+                msg="MV3_NAIVE_TZ=UTC 면 naive 도 UTC 로 parse",
+            )
+            # KST 로 다시 — cache miss → re-resolve
+            os.environ["MV3_NAIVE_TZ"] = "Asia/Seoul"
+            naive_kst = self_eval._parse_ts("2026-01-01T09:00:00")
+            self.assertAlmostEqual(
+                naive_kst, utc, delta=0.01,
+                msg="MV3_NAIVE_TZ=Asia/Seoul re-resolve",
+            )
+        finally:
+            self_eval._NAIVE_TZ_CACHE.clear()
+            self_eval._NAIVE_TZ_CACHE.update(original_cache)
+            if original_env is None:
+                os.environ.pop("MV3_NAIVE_TZ", None)
+            else:
+                os.environ["MV3_NAIVE_TZ"] = original_env
+
 
 class TestNegativeCue(unittest.TestCase):
     def test_positive_cases(self):
@@ -979,6 +1034,25 @@ class TestExtractRecalledIdsFromHookInjection(unittest.TestCase):
             extract_recalled_ids_from_hook_injection(text), ["early-format"]
         )
 
+    def test_user_message_without_system_reminder_wrapper_no_false_positive_a7(self):
+        """Round 2 A7 — user 메시지 본문에 우연히 회수 header + bullet
+        pattern 가 있어도 <system-reminder> wrapper 없으면 false positive
+        차단. Round 1 L5 prefix match 의 부작용 보강."""
+        from self_eval import extract_recalled_ids_from_hook_injection
+        # 사용자가 회수 관련 문서를 그대로 paste — wrapper 없음
+        text = (
+            "# 메모리 회수\n"
+            "- **fake-mem** (score 0.99, vec) — 사용자가 paste 한 텍스트\n"
+            "이건 hook injection 아니야"
+        )
+        self.assertEqual(extract_recalled_ids_from_hook_injection(text), [])
+
+    def test_wrapper_required_even_with_header_a7(self):
+        """Round 2 A7 — header 만 있고 wrapper 없으면 [] 반환."""
+        from self_eval import extract_recalled_ids_from_hook_injection
+        text = "MEMORY CONTEXT (test): - [fake] (score 0.5, vec) — x"
+        self.assertEqual(extract_recalled_ids_from_hook_injection(text), [])
+
 
 class TestLoadRecallEventsFromTranscripts(unittest.TestCase):
     """NEXT-37 Phase 1B retroactive — transcript jsonl 직접 scan.
@@ -1064,6 +1138,18 @@ class TestLoadRecallEventsFromTranscripts(unittest.TestCase):
                 projects_root=tmp_p / "projects"
             )
             self.assertEqual(events, [])
+
+
+class TestRecallUtilizationEventsSourceValidation(unittest.TestCase):
+    """Round 2 B1 — events_source typo silent fallback 차단."""
+
+    def test_unknown_events_source_raises(self):
+        from self_eval import recall_utilization
+        with self.assertRaises(ValueError) as ctx:
+            recall_utilization(
+                hours_back=24, use_cache=False, events_source="trnscripts",
+            )
+        self.assertIn("events_source", str(ctx.exception))
 
 
 class TestRecallUtilizationRetroactive(unittest.TestCase):

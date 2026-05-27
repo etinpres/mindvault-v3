@@ -20,7 +20,7 @@ import re
 import sys
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Iterable
 
@@ -30,17 +30,37 @@ DEFAULT_METRICS = DATA_DIR / "metrics.jsonl"
 DEFAULT_PROJECTS_ROOT = Path(os.environ.get("MV3_PROJECTS_ROOT", "~/.claude/projects")).expanduser()
 DEBUG_LOG = DATA_DIR / "debug.log"
 
-# Round 1 fix M3 — naive metrics ts 의 timezone 명시. production hook 가
-# `time.strftime("%Y-%m-%dT%H:%M:%S")` 로 local naive 박는데 시스템 TZ 가
-# Asia/Seoul 이 아니면 (CI / TZ=UTC) `dt.astimezone()` fallback 이 잘못된
-# unix 산출 → jsonl Z (UTC) 와 32400s skew. 명시 timezone 으로 차단.
-# env var 로 다른 환경 사용자 override.
-_NAIVE_TZ_NAME = os.environ.get("MV3_NAIVE_TZ", "Asia/Seoul")
-try:
-    from zoneinfo import ZoneInfo as _ZoneInfo
-    _NAIVE_TZ_OBJ = _ZoneInfo(_NAIVE_TZ_NAME)
-except Exception:
-    _NAIVE_TZ_OBJ = None  # fallback: system local via dt.astimezone()
+# Round 1 fix M3 (Round 2 보강 A2+B4+B5): naive metrics ts 의 timezone 명시.
+# production hook 가 `time.strftime("%Y-%m-%dT%H:%M:%S")` 로 local naive 박는데
+# 시스템 TZ 가 Asia/Seoul 이 아니면 잘못된 unix 산출 → jsonl Z (UTC) 와
+# 32400s skew. lazy 해소 + env var lookup 매 호출 (cache 인 dict key) 으로
+# monkeypatch.setenv 호환. zoneinfo fail 또는 invalid zone 명시 시
+# hardcoded UTC+9 fallback (system TZ 의존 회피).
+_NAIVE_TZ_CACHE: dict[str, "datetime.tzinfo"] = {}
+
+
+def _get_naive_tz():
+    """env var (MV3_NAIVE_TZ, default Asia/Seoul) → ZoneInfo, fail 시
+    hardcoded UTC+9 timezone fallback. cache by env value 라 env 변경 시
+    re-resolve. test isolation 보장.
+    """
+    name = os.environ.get("MV3_NAIVE_TZ", "Asia/Seoul")
+    cached = _NAIVE_TZ_CACHE.get(name)
+    if cached is not None:
+        return cached
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(name)
+    except Exception as e:
+        # Round 2 A2/B4: invalid zone 또는 zoneinfo unavailable 시 silent
+        # fallback to system TZ 위험 → hardcoded UTC+9 (production 가정).
+        _debug(
+            f"_get_naive_tz: ZoneInfo({name!r}) failed ({e}); "
+            f"falling back to hardcoded UTC+9"
+        )
+        tz = timezone(timedelta(hours=9))
+    _NAIVE_TZ_CACHE[name] = tz
+    return tz
 
 # Sprint 15: hook 회수 직후 다음 사용자 turn 에서 자주 나타나는 negative cue 패턴.
 # 사용자가 "이거 관계없는데" 식으로 받아치면 그 회수는 false positive 강력 신호.
@@ -121,10 +141,9 @@ def _parse_ts(ts: str) -> float | None:
             ts = ts[:-1] + "+00:00"
         dt = datetime.fromisoformat(ts)
         if dt.tzinfo is None:
-            if _NAIVE_TZ_OBJ is not None:
-                dt = dt.replace(tzinfo=_NAIVE_TZ_OBJ)
-            else:
-                dt = dt.astimezone()  # fallback when zoneinfo unavailable
+            # Round 2 B5: lazy resolution — module-level cache 가 env 변경
+            # 따라 re-resolve 되어 monkeypatch.setenv 호환.
+            dt = dt.replace(tzinfo=_get_naive_tz())
         return dt.timestamp()
     except (ValueError, TypeError):
         return None
@@ -765,18 +784,25 @@ def analyze_recent(
     }
 
 
-def extract_recalled_ids_from_hook_injection(text: str) -> list[str]:
-    """transcript user-role text 가 hook 가 주입한 회수 system-reminder 면
-    회수된 메모리 name list 추출. 아니면 빈 list.
+_SYSTEM_REMINDER_TAG = "<system-reminder>"
 
-    매칭 조건: RECALL_INJECTION_HEADERS 중 하나가 본문에 있고, "- **<name>**"
-    (옛) 또는 "- [<name>]" (신규) 패턴 줄들. 다른 종류 system-reminder
-    (telegram-guard 등) 는 [] 반환.
+
+def extract_recalled_ids_from_hook_injection(text: str) -> list[str]:
+    """transcript text 가 hook 가 주입한 회수 system-reminder 면 회수된
+    메모리 name list 추출. 아니면 빈 list.
+
+    매칭 3-조건 (모두 만족):
+    1. `<system-reminder>` wrapper 존재 (Round 2 A7 fix — user-role 사용자
+       메시지 본문 안 우연 "# 메모리 회수" 텍스트 false positive 차단)
+    2. RECALL_INJECTION_HEADERS 중 하나가 본문에 있음
+    3. RECALLED_NAME_RE 매칭 — "- **<name>**" (옛) 또는 "- [<name>]" (신규)
 
     NEXT-37 Phase 1B retroactive — metrics.jsonl 에 recalled_ids 박히기
     이전 데이터 (Phase 1A 이전 수개월 누적) 에도 활용도 분석 가능.
     """
     if not text:
+        return []
+    if _SYSTEM_REMINDER_TAG not in text:
         return []
     if not any(h in text for h in RECALL_INJECTION_HEADERS):
         return []
@@ -963,16 +989,22 @@ def recall_utilization(
     - per_event_sample: 최대 10건
     """
     since = time.time() - hours_back * 3600
+    # Round 2 B1: events_source typo silent fallback 차단 — 명시 elif + raise.
     if events_source == "transcripts":
         events_with_ids = load_recall_events_from_transcripts(
             projects_root=projects_root, since_unix=since
         )
-    else:
+    elif events_source == "metrics":
         events = load_recall_events(metrics_path, since_unix=since)
         events_with_ids = [
             e for e in events
             if isinstance(e.get("recalled_ids"), list) and e["recalled_ids"]
         ]
+    else:
+        raise ValueError(
+            f"unknown events_source: {events_source!r} "
+            f"(expected 'metrics' or 'transcripts')"
+        )
 
     all_turns: list[dict] = []
     if use_cache:
