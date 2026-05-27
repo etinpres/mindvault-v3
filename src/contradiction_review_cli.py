@@ -119,12 +119,41 @@ def _extract_yaml_name(p: Path) -> str | None:
 
 
 def _patch_frontmatter_list(p: Path, key: str, value: str) -> bool:
-    """Append value to frontmatter '{key}: [a, b]' list, idempotent."""
+    """Append value to frontmatter '{key}: [a, b]' list, idempotent.
+
+    Refuses to mutate block-style YAML lists (e.g. `key:\\n  - a\\n  - b`) —
+    naive append would create a duplicate key. User must convert to flow-style
+    ([a, b]) first.
+    """
     text = _read_text(p)
     if text is None:
         return False
     fm, body = _split_frontmatter(text)
     if not fm:
+        return False
+
+    # Refuse to mutate block-style YAML lists — would silently create duplicate keys.
+    block_re = re.compile(
+        rf"^{re.escape(key)}:\s*\n(\s+-\s+\S+\s*\n)+",
+        re.MULTILINE,
+    )
+    if block_re.search(fm):
+        try:
+            import os as _os
+            log_path = Path(
+                _os.environ.get("MV3_RUNTIME_DIR")
+                or (Path.home() / ".claude" / "mindvault-v3")
+            ) / "debug.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            import time
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            with log_path.open("a", encoding="utf-8") as logf:
+                logf.write(
+                    f"[{ts}] contradiction-cli: refuse to mutate block-style "
+                    f"YAML list {key!r} in {p}\n"
+                )
+        except OSError:
+            pass
         return False
 
     line_re = re.compile(rf"^{re.escape(key)}:\s*\[(.*?)\]\s*$", re.MULTILINE)
@@ -258,7 +287,13 @@ def cmd_resolve(args) -> int:
         if not _apply_supersede(new_path, old_path):
             print("supersede frontmatter mutate 실패 (name 추출 실패?)", file=sys.stderr)
             return 2
-        _mark_resolved(d, "superseded")
+        if not _mark_resolved(d, "superseded"):
+            print(
+                f"WARN: frontmatter patched but jsonl mark failed for {new_slug}. "
+                "Re-run dismiss to clean up the queue.",
+                file=sys.stderr,
+            )
+            return 2
         print(f"superseded: {new_slug} marks {target_name} as deprecated_by")
         return 0
 
@@ -272,7 +307,14 @@ def cmd_resolve(args) -> int:
         if not _apply_update(new_path, old_path):
             print("update 실패 (old frontmatter 없음?)", file=sys.stderr)
             return 2
-        _mark_resolved(d, "updated")
+        if not _mark_resolved(d, "updated"):
+            print(
+                f"WARN: update applied but jsonl mark failed for {new_slug}. "
+                "Re-run dismiss to clean up the queue "
+                "(NEW file already deleted, OLD already updated).",
+                file=sys.stderr,
+            )
+            return 2
         print(f"updated: {target_name} body merged with {new_slug}, new deleted")
         return 0
 

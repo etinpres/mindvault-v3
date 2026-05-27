@@ -343,3 +343,99 @@ def test_resolve_supersede_missing_file_returns_error(tmp_path, monkeypatch):
 
     rc = cli.main(["resolve", "1", "--action", "supersede", "--apply"])
     assert rc == 2
+
+
+def test_resolve_supersede_mark_resolved_failure_returns_2(tmp_path, monkeypatch, capsys):
+    """If _mark_resolved fails after frontmatter mutation, return exit 2 with warning."""
+    from src import contradiction_review_cli as cli
+    monkeypatch.setenv("MV3_RUNTIME_DIR", str(tmp_path))
+
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    new_p = mem / "new_x.md"
+    old_p = mem / "old_x.md"
+    new_p.write_text("---\nname: new-x\ntype: feedback\n---\n\nbody\n", encoding="utf-8")
+    old_p.write_text("---\nname: old-x\ntype: feedback\n---\n\nbody\n", encoding="utf-8")
+
+    _write_queue(tmp_path, [{
+        "new_slug": "new-x", "new_path": str(new_p),
+        "target_name": "old-x", "target_path": str(old_p),
+        "kind": "decision_reversal", "reason": "r", "confidence": 0.9,
+        "resolved": False,
+    }])
+
+    # Force _mark_resolved to return False
+    monkeypatch.setattr(
+        "src.contradiction_review_cli._mark_resolved",
+        lambda item, status: False,
+    )
+
+    rc = cli.main(["resolve", "1", "--action", "supersede", "--apply"])
+    assert rc == 2, f"expected exit 2 on mark_resolved fail, got {rc}"
+    err = capsys.readouterr().err
+    assert "WARN" in err or "jsonl mark" in err
+
+
+def test_resolve_update_mark_resolved_failure_returns_2(tmp_path, monkeypatch, capsys):
+    """Update: mark_resolved failure → exit 2 + clear warning about already-mutated files."""
+    from src import contradiction_review_cli as cli
+    monkeypatch.setenv("MV3_RUNTIME_DIR", str(tmp_path))
+
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    new_p = mem / "new_x.md"
+    old_p = mem / "old_x.md"
+    new_p.write_text("---\nname: new-x\ntype: feedback\n---\n\nnew body\n", encoding="utf-8")
+    old_p.write_text("---\nname: old-x\ntype: feedback\n---\n\nold body\n", encoding="utf-8")
+
+    _write_queue(tmp_path, [{
+        "new_slug": "new-x", "new_path": str(new_p),
+        "target_name": "old-x", "target_path": str(old_p),
+        "kind": "metric_update", "reason": "r", "confidence": 0.9,
+        "resolved": False,
+    }])
+
+    monkeypatch.setattr(
+        "src.contradiction_review_cli._mark_resolved",
+        lambda item, status: False,
+    )
+
+    rc = cli.main(["resolve", "1", "--action", "update", "--apply"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "WARN" in err
+
+
+def test_patch_frontmatter_refuses_block_style_yaml_list(tmp_path):
+    """Block-style YAML list should be REFUSED (return False), not silently appended."""
+    from src.contradiction_review_cli import _patch_frontmatter_list
+
+    p = tmp_path / "x.md"
+    p.write_text(
+        "---\nname: x\nsupersedes:\n  - a\n  - b\ntype: feedback\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+
+    original = p.read_text(encoding="utf-8")
+    ok = _patch_frontmatter_list(p, "supersedes", "c")
+
+    assert ok is False, "must refuse block-style YAML list, not append duplicate key"
+    # File unchanged
+    assert p.read_text(encoding="utf-8") == original
+
+
+def test_patch_frontmatter_flow_style_still_works_after_block_guard(tmp_path):
+    """Flow-style supersedes still mutates correctly after block-style guard added."""
+    from src.contradiction_review_cli import _patch_frontmatter_list
+
+    p = tmp_path / "x.md"
+    p.write_text(
+        "---\nname: x\nsupersedes: [a]\ntype: feedback\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+
+    ok = _patch_frontmatter_list(p, "supersedes", "b")
+    assert ok is True
+    content = p.read_text(encoding="utf-8")
+    # Should now contain "supersedes: [a, b]"
+    assert "supersedes: [a, b]" in content
