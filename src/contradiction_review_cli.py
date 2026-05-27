@@ -19,8 +19,11 @@ def _queue_path() -> Path:
     return base / "contradictions.jsonl"
 
 
-def _load_all() -> list[dict]:
-    """Read all jsonl rows, skipping malformed lines silently."""
+def load_all() -> list[dict]:
+    """Read all jsonl rows (including resolved), skipping malformed lines.
+
+    Public — T7's atomic rewrite reuses this to preserve schema lock-step with T6.
+    """
     p = _queue_path()
     if not p.exists():
         return []
@@ -36,7 +39,7 @@ def _load_all() -> list[dict]:
 
 
 def _load_unresolved() -> list[dict]:
-    return [d for d in _load_all() if not d.get("resolved")]
+    return [d for d in load_all() if not d.get("resolved")]
 
 
 def cmd_list(args) -> int:
@@ -45,11 +48,20 @@ def cmd_list(args) -> int:
         print("미해결 contradiction 없음.")
         return 0
     for i, d in enumerate(items, 1):
+        kind = d.get("kind", "?")
+        new_slug = d.get("new_slug", "?")
+        target_name = d.get("target_name", "?")
+        confidence = d.get("confidence", 0.0)
+        reason = d.get("reason", "")
+        try:
+            conf_str = f"{float(confidence):.2f}"
+        except (TypeError, ValueError):
+            conf_str = "?"
         print(
-            f"[{i}] {d['kind']:18s} | new={d['new_slug']:25s} "
-            f"vs old={d['target_name']:25s} | conf={d['confidence']:.2f}"
+            f"[{i}] {kind:18s} | new={new_slug:25s} "
+            f"vs old={target_name:25s} | conf={conf_str}"
         )
-        print(f"    {d['reason']}")
+        print(f"    {reason}")
     return 0
 
 
@@ -64,13 +76,13 @@ def cmd_show(args) -> int:
         return 1
     d = items[idx]
     print(f"=== Contradiction [{args.idx}] ===")
-    print(f"kind:       {d['kind']}")
-    print(f"new:        {d['new_slug']}")
+    print(f"kind:       {d.get('kind', '?')}")
+    print(f"new:        {d.get('new_slug', '?')}")
     print(f"  path:     {d.get('new_path', '?')}")
-    print(f"old:        {d['target_name']}")
+    print(f"old:        {d.get('target_name', '?')}")
     print(f"  path:     {d.get('target_path', '?')}")
-    print(f"confidence: {d['confidence']}")
-    print(f"reason:     {d['reason']}")
+    print(f"confidence: {d.get('confidence', '?')}")
+    print(f"reason:     {d.get('reason', '')}")
     print()
     print("--- new excerpt ---")
     print(d.get("new_excerpt", ""))
@@ -91,7 +103,9 @@ def cmd_resolve(args) -> int:
         )
         return 1
     d = items[idx]
-    print(f"[{args.action}] {d['new_slug']} vs {d['target_name']}")
+    new_slug = d.get("new_slug", "?")
+    target_name = d.get("target_name", "?")
+    print(f"[{args.action}] {new_slug} vs {target_name}")
     if not args.apply:
         print("(dry-run — --apply 추가 시 실제 적용. T7 에서 활성화)")
     else:
