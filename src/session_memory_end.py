@@ -155,6 +155,60 @@ def write_staged(
             pass
 
 
+def make_contradiction_aware_writer(base_writer, mem_dir: Path):
+    """v3.4 T5: wrap a write_staged-style writer so each successful staged write
+    triggers contradiction detection against already-promoted memories.
+
+    Args:
+        base_writer: callable (item, session_id, slug_override=None) -> Path | None
+        mem_dir: directory of promoted memories (NOT _staged/). detect_contradictions
+                 filters recall results to this subtree.
+
+    Returns:
+        Wrapped writer with the same signature. Best-effort detection: any failure
+        in detect/append is swallowed (logged via _debug) and the staged path is
+        still returned unchanged. write_staged returning None (dedup skip) → no
+        detection fires.
+
+    Critical contract: candidate dict carries 'path' = staged_path so
+    _recall_candidates can do path-identity self-exclusion (T2 contract — closes
+    the stem-suffix false-positive gap for short slugs like 'metric', 'fix').
+    """
+
+    def wrapped(item, session_id, slug_override=None):
+        staged_path = base_writer(item, session_id, slug_override=slug_override)
+        if not staged_path:
+            return staged_path  # dedup skip or write failure — no detection
+
+        try:
+            from contradiction_detector import (
+                detect_contradictions,
+                append_to_review_queue,
+            )
+            slug = slug_override or item.get("slug") or ""
+            candidate = {
+                "slug": slug,
+                "title": item.get("title", ""),
+                "body": item.get("body", ""),
+                "type": item.get("type", ""),
+                "path": staged_path,  # T2 contract: path-identity self-exclusion
+            }
+            contradictions = detect_contradictions(candidate, mem_dir)
+            if contradictions:
+                append_to_review_queue(slug, contradictions, new_path=staged_path)
+                _debug(f"contradiction: {len(contradictions)} found for {slug}")
+        except Exception as e:
+            # best-effort — staged write already succeeded
+            _debug(
+                f"contradiction detect/append error for "
+                f"{item.get('slug')}: {type(e).__name__}: {e}"
+            )
+
+        return staged_path
+
+    return wrapped
+
+
 def _stage_with_conflict_resolution(
     candidates: list[dict],
     existing_slugs_set: set,
@@ -250,8 +304,13 @@ def main() -> int:
             _debug(f"compile skipped: {type(e).__name__}: {e}")
 
         slugs = existing_slugs()
+        # T5 (v3.4): wrap write_staged so each staged write triggers contradiction
+        # detection against promoted memories. mem_dir = MEMORY_DIR (not _staged/).
+        contradiction_writer = make_contradiction_aware_writer(
+            write_staged, MEMORY_DIR
+        )
         written = _stage_with_conflict_resolution(
-            candidates, slugs, sid, write_staged
+            candidates, slugs, sid, contradiction_writer
         )
         _debug(f"session {sid[:8]}: staged {written}/{len(candidates)}")
 
