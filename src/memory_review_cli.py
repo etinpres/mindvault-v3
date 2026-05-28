@@ -179,6 +179,30 @@ def _is_safe_update_target(target: Path) -> bool:
     return False
 
 
+def _supersede_passthrough(meta: dict) -> str:
+    """Defect Suspect2: preserve ``supersedes:`` / ``deprecated_by:`` audit links.
+
+    cmd_approve rebuilds frontmatter from scratch (keeping only
+    name/description/type), which silently DROPPED the ``supersedes: [...]``
+    injected by ``contradiction_review_cli resolve --action supersede`` into a
+    STAGED file — losing the NEW→OLD audit link on promote.
+
+    parse_frontmatter stores list values as the raw ``[a, b]`` STRING (no YAML
+    parse), so we re-emit them verbatim. Returns trailing-newline-terminated
+    extra frontmatter lines (or "" if neither key is present).
+    """
+    extra = ""
+    for key in ("supersedes", "deprecated_by"):
+        val = meta.get(key)
+        if val is None:
+            continue
+        val = str(val).strip()
+        if not val:
+            continue
+        extra += f"{key}: {val}\n"
+    return extra
+
+
 def _read_existing_body(path: Path) -> str:
     """기존 memory 파일에서 본문(frontmatter 제외) 추출. 없으면 빈 문자열."""
     try:
@@ -353,11 +377,19 @@ def cmd_approve(filename: str) -> int:
                 existing_meta, _ = parse_frontmatter(
                     target.read_text(encoding="utf-8")
                 )
+                # Defect Suspect2: passthrough supersedes/deprecated_by audit
+                # links from the STAGED frontmatter (where supersede injects them)
+                # AND the existing target (preserve any prior links). Staged wins.
+                passthrough_meta = {
+                    **{k: existing_meta[k] for k in ("supersedes", "deprecated_by") if k in existing_meta},
+                    **{k: meta[k] for k in ("supersedes", "deprecated_by") if k in meta},
+                }
                 final_fm = (
                     "---\n"
                     f"name: {existing_meta.get('name', meta.get('name', slug))}\n"
                     f"description: {existing_meta.get('description', meta.get('description', slug))}\n"
                     f"type: {existing_meta.get('type', meta_type)}\n"
+                    f"{_supersede_passthrough(passthrough_meta)}"
                     "---\n\n"
                     f"{body.rstrip()}\n"
                 )
@@ -403,6 +435,8 @@ def cmd_approve(filename: str) -> int:
             f"name: {meta.get('name', slug)}\n"
             f"description: {meta.get('description', meta.get('name', slug))}\n"
             f"type: {meta_type}\n"
+            # Defect Suspect2: passthrough supersedes/deprecated_by from staged fm.
+            f"{_supersede_passthrough(meta)}"
             "---\n\n"
             f"{body.rstrip()}\n"
         )

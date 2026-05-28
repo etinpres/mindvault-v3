@@ -85,6 +85,24 @@ def test_is_deprecated_matches_block_style_yaml(tmp_path, memory_recall_mod):
     assert memory_recall_mod._is_deprecated(dep) is True
 
 
+def test_is_deprecated_handles_crlf(tmp_path, memory_recall_mod):
+    """CRLF-saved memory (manual Windows/Obsidian edit) must still detect frontmatter."""
+    dep = tmp_path / "a.md"
+    dep.write_bytes(
+        "---\r\nname: a\r\ndeprecated_by: [b]\r\n---\r\n\r\nbody\r\n".encode("utf-8")
+    )
+    assert memory_recall_mod._is_deprecated(dep) is True
+
+
+def test_is_deprecated_handles_crlf_block_style(tmp_path, memory_recall_mod):
+    """CRLF + block-style deprecated_by list must also be detected."""
+    dep = tmp_path / "a.md"
+    dep.write_bytes(
+        "---\r\nname: a\r\ndeprecated_by:\r\n  - b\r\ntype: feedback\r\n---\r\n\r\nbody\r\n".encode("utf-8")
+    )
+    assert memory_recall_mod._is_deprecated(dep) is True
+
+
 def test_is_deprecated_ignores_deprecated_by_in_body(tmp_path, memory_recall_mod):
     """body 안 'deprecated_by: [...]' literal must NOT trigger detection (frontmatter only)."""
     plain = tmp_path / "a.md"

@@ -70,7 +70,9 @@ def _is_deprecated(path: Path) -> bool:
     except OSError:
         return False
     # frontmatter 블록 추출: ---\n...\n---
-    m = re.match(r"^---\n(.*?)\n---\n", head, re.DOTALL)
+    # CRLF (Windows/Obsidian 수동 편집) 도 허용 — \r?\n. 미허용 시 frontmatter
+    # 미검출 → _is_deprecated False → decay skip (silent).
+    m = re.match(r"^---\r?\n(.*?)\r?\n---\r?\n", head, re.DOTALL)
     if not m:
         return False
     fm = m.group(1)

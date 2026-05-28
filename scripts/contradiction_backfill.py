@@ -80,10 +80,33 @@ def main(argv: list[str] | None = None) -> int:
         append_to_review_queue,
     )
 
-    mem_dir = args.memory_dir if args.memory_dir else _default_memory_dir()
+    default_dir = _default_memory_dir()
+    mem_dir = args.memory_dir if args.memory_dir else default_dir
     if not mem_dir.exists():
         print(f"memory dir not found: {mem_dir}", file=sys.stderr)
         return 1
+
+    # Defect I-memdir: detect_contradictions → _hybrid_search → recall_memory
+    # reads the PRODUCTION index DB (memory_indexer.DB_PATH), NOT this directory.
+    # _hybrid_search then filters recall hits to paths under mem_dir. So if
+    # mem_dir's files are not in the prod index DB, every hit is filtered out and
+    # detection silently reports ZERO contradictions. For the default dir (which
+    # IS indexed) this works; a custom --memory-dir looks like it works but
+    # detects nothing. Warn loudly rather than fail (the dir may legitimately be
+    # indexed via MV3_EXTRA_MEMORY_DIRS / sources.json).
+    try:
+        differs = mem_dir.resolve(strict=False) != default_dir.resolve(strict=False)
+    except OSError:
+        differs = str(mem_dir) != str(default_dir)
+    if differs:
+        print(
+            f"WARNING: --memory-dir {mem_dir} differs from the indexed memory dir "
+            f"{default_dir}. recall_memory reads the production index DB; files "
+            f"under {mem_dir} that aren't indexed will produce zero contradictions. "
+            f"Re-index that dir first (MV3_EXTRA_MEMORY_DIRS / sources.json) or use "
+            f"the default.",
+            file=sys.stderr,
+        )
 
     files = sorted(mem_dir.glob("*.md"))
     # Skip MEMORY.md (index, no frontmatter)

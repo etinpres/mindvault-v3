@@ -594,6 +594,62 @@ def test_apply_supersede_no_partial_mutation_when_old_block_style(tmp_path):
     assert new_p.read_text(encoding="utf-8") == new_before, "NEW mutated despite OLD failure (partial mutation)"
 
 
+# ---------------------------------------------------------------------------
+# v3.4 static-audit round 2 — CRLF frontmatter + block-guard last-key edge
+# ---------------------------------------------------------------------------
+
+
+def test_split_frontmatter_handles_crlf(tmp_path):
+    """CRLF-saved memory (Windows/Obsidian) must still have frontmatter detected."""
+    from src.contradiction_review_cli import _split_frontmatter
+    text = "---\r\nname: a\r\nsupersedes: [b]\r\n---\r\n\r\nbody\r\n"
+    fm, body = _split_frontmatter(text)
+    assert "name: a" in fm, f"CRLF frontmatter not detected: fm={fm!r}"
+    assert "supersedes: [b]" in fm
+    assert "body" in body
+
+
+def test_patch_frontmatter_appends_to_crlf_flow_list(tmp_path):
+    """Flow-style patch must work even on CRLF-saved file (frontmatter detected)."""
+    from src.contradiction_review_cli import _patch_frontmatter_list
+    p = tmp_path / "x.md"
+    p.write_bytes("---\r\nname: x\r\nsupersedes: [a]\r\n---\r\n\r\nbody\r\n".encode("utf-8"))
+    ok = _patch_frontmatter_list(p, "supersedes", "b")
+    assert ok is True, "CRLF flow-style list must be patchable"
+    content = p.read_text(encoding="utf-8")
+    assert "supersedes: [a, b]" in content
+
+
+def test_patch_frontmatter_refuses_block_style_as_last_key(tmp_path):
+    from src.contradiction_review_cli import _patch_frontmatter_list
+    p = tmp_path / "x.md"
+    # block list is the LAST key, no trailing key after
+    p.write_text("---\nname: x\nsupersedes:\n  - a\n  - b\n---\n\nbody\n", encoding="utf-8")
+    original = p.read_text(encoding="utf-8")
+    ok = _patch_frontmatter_list(p, "supersedes", "c")
+    assert ok is False, "must refuse block-style even as last key"
+    assert p.read_text(encoding="utf-8") == original
+
+
+def test_patch_frontmatter_refuses_single_item_block_as_last_key(tmp_path):
+    """Single-item block list as the last key (no trailing newline) must be refused."""
+    from src.contradiction_review_cli import _patch_frontmatter_list
+    p = tmp_path / "x.md"
+    p.write_text("---\nname: x\nsupersedes:\n  - a\n---\n\nbody\n", encoding="utf-8")
+    original = p.read_text(encoding="utf-8")
+    ok = _patch_frontmatter_list(p, "supersedes", "c")
+    assert ok is False, "single-item block-style as last key must be refused"
+    assert p.read_text(encoding="utf-8") == original
+
+
+def test_can_patch_frontmatter_refuses_block_as_last_key(tmp_path):
+    """_can_patch_frontmatter_list (dry validation) must mirror the refusal."""
+    from src.contradiction_review_cli import _can_patch_frontmatter_list
+    p = tmp_path / "x.md"
+    p.write_text("---\nname: x\nsupersedes:\n  - a\n---\n\nbody\n", encoding="utf-8")
+    assert _can_patch_frontmatter_list(p, "supersedes") is False
+
+
 def test_mark_resolved_tmp_includes_pid(tmp_path, monkeypatch):
     """tmp file name must include pid to avoid concurrent-resolve races."""
     import os

@@ -101,8 +101,13 @@ def _read_text(p: Path) -> str | None:
 
 
 def _split_frontmatter(text: str) -> tuple[str, str]:
-    """Returns ('frontmatter content', 'body'). No frontmatter → ('', text)."""
-    m = re.match(r"^---\n(.*?)\n---\n+", text, re.DOTALL)
+    """Returns ('frontmatter content', 'body'). No frontmatter → ('', text).
+
+    Defect CRLF: accept CRLF line endings (\\r\\n) so manually-edited
+    (Windows/Obsidian) memories aren't silently treated as frontmatter-less,
+    which would skip the supersede mutation without any error.
+    """
+    m = re.match(r"^---\r?\n(.*?)\r?\n---\r?\n+", text, re.DOTALL)
     if not m:
         return "", text
     return m.group(1), text[m.end():]
@@ -148,6 +153,24 @@ def _supersede_id(p: Path) -> str:
     return p.stem
 
 
+def _BLOCK_LIST_RE(key: str) -> re.Pattern:
+    """Detect a block-style YAML list (``key:\\n  - a\\n  - b``).
+
+    Defect block-guard-edge: the previous regex required a trailing newline after
+    the final ``- item`` (``\\s*\\n``), so a block list that is the LAST
+    frontmatter key with no trailing newline (e.g. ``supersedes:\\n  - a`` at
+    end-of-string) slipped past the guard — _patch_frontmatter_list would then
+    append a duplicate inline ``supersedes: [...]`` key. We tolerate end-of-line
+    OR end-of-string after each item (``(\\s*\\n|\\s*$)``) under re.MULTILINE.
+    CRLF tolerated via the surrounding _split_frontmatter (\\r stripped there),
+    but we also allow \\r before the newline defensively.
+    """
+    return re.compile(
+        rf"^{re.escape(key)}:[ \t]*\r?\n(\s+-\s+\S+(\s*\r?\n|\s*$))+",
+        re.MULTILINE,
+    )
+
+
 def _can_patch_frontmatter_list(p: Path, key: str) -> bool:
     """Dry validation: would ``_patch_frontmatter_list(p, key, ...)`` succeed?
 
@@ -161,11 +184,7 @@ def _can_patch_frontmatter_list(p: Path, key: str) -> bool:
     fm, _ = _split_frontmatter(text)
     if not fm:
         return False
-    block_re = re.compile(
-        rf"^{re.escape(key)}:\s*\n(\s+-\s+\S+\s*\n)+",
-        re.MULTILINE,
-    )
-    if block_re.search(fm):
+    if _BLOCK_LIST_RE(key).search(fm):
         return False
     return True
 
@@ -185,11 +204,7 @@ def _patch_frontmatter_list(p: Path, key: str, value: str) -> bool:
         return False
 
     # Refuse to mutate block-style YAML lists — would silently create duplicate keys.
-    block_re = re.compile(
-        rf"^{re.escape(key)}:\s*\n(\s+-\s+\S+\s*\n)+",
-        re.MULTILINE,
-    )
-    if block_re.search(fm):
+    if _BLOCK_LIST_RE(key).search(fm):
         try:
             import os as _os
             log_path = Path(

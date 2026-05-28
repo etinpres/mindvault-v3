@@ -238,6 +238,72 @@ def test_backfill_default_memory_dir_uses_home(monkeypatch):
         )
 
 
+def test_backfill_warns_on_custom_memory_dir(tmp_path, monkeypatch, capsys):
+    """A --memory-dir that differs from the indexed default must warn loudly.
+
+    Defect I-memdir: recall_memory reads the production index DB, not the passed
+    directory. A custom (un-indexed) --memory-dir therefore silently detects zero
+    contradictions. The script must surface this limitation on stderr.
+    """
+    import importlib.util
+    repo = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "contradiction_backfill", repo / "scripts" / "contradiction_backfill.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # Ensure the default derives from $HOME (not our custom dir).
+    monkeypatch.delenv("MV3_MEMORY_DIR", raising=False)
+    monkeypatch.delenv("MV3_PROJECTS_DIR", raising=False)
+    monkeypatch.delenv("MV3_PROJECTS_ROOT", raising=False)
+
+    custom = tmp_path / "custom_mem"
+    custom.mkdir()
+    (custom / "feedback_a.md").write_text("---\nname: a\n---\nbody\n", encoding="utf-8")
+
+    # mock detect to avoid Gemma
+    repo_src = repo / "src"
+    if str(repo_src) not in sys.path:
+        sys.path.insert(0, str(repo_src))
+    import contradiction_detector
+    monkeypatch.setattr(contradiction_detector, "detect_contradictions", lambda c, m: [])
+
+    mod.main(["--memory-dir", str(custom), "--dry-run"])
+    err = capsys.readouterr().err
+    assert "index" in err.lower() or "warning" in err.lower(), (
+        "custom dir should warn about index DB"
+    )
+
+
+def test_backfill_no_warn_on_default_memory_dir(tmp_path, monkeypatch, capsys):
+    """When --memory-dir matches the (env-overridden) default, NO warning fires."""
+    import importlib.util
+    repo = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "contradiction_backfill", repo / "scripts" / "contradiction_backfill.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    (mem / "feedback_a.md").write_text("---\nname: a\n---\nbody\n", encoding="utf-8")
+    # Point the DEFAULT at this dir via env so passing it explicitly matches.
+    monkeypatch.setenv("MV3_MEMORY_DIR", str(mem))
+
+    repo_src = repo / "src"
+    if str(repo_src) not in sys.path:
+        sys.path.insert(0, str(repo_src))
+    import contradiction_detector
+    monkeypatch.setattr(contradiction_detector, "detect_contradictions", lambda c, m: [])
+
+    # No --memory-dir at all → uses default → no warning.
+    mod.main(["--dry-run"])
+    err = capsys.readouterr().err
+    assert "differs from the indexed" not in err, (
+        f"default memory dir must not warn, got stderr: {err!r}"
+    )
+
+
 def test_backfill_default_memory_dir_respects_env_overrides(monkeypatch, tmp_path):
     """MV3_MEMORY_DIR / MV3_PROJECTS_DIR overrides honored (matches hook)."""
     import importlib.util
