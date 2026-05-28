@@ -31,6 +31,8 @@ Memory Compiler 가 신규/업데이트 메모리를 staged 한 *직후* `contra
 
 **Inspiration**: 외부 CDSS MindVault fork 의 LLM-detected contradictions (fact-layer 4-type 중 detection 부분만 차용. 4-type 메모리 분류 자체는 v3.5 후보).
 
+- **Known limitations**: review CLI resolve 는 single-writer 가정 (동시 resolve / resolve-중-append race 미보호, 드뭄·재검출로 복구). supersede audit-trace 는 staged stem 기록 (promote 후 stale, decay 기능은 정상). backfill `--memory-dir custom` 은 prod index 인덱싱된 dir 만 유효.
+
 ### 핵심 원칙 (MindVault v1 실패 교훈)
 
 - **Claude Code 내부에서만 작동** — 별도 서버, 별도 에이전트 없음
