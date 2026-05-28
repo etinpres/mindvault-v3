@@ -29,7 +29,7 @@ Memory Compiler 가 신규/업데이트 메모리를 staged 한 *직후* `contra
 
 **Cost asymmetry**: v3 는 silent abstention 정책이라 confidence < 0.7 의 false negative 를 허용. 보수적 retrieve 가 필요한 도메인 (e.g. CDSS 임상결정지원 fork) 은 threshold 낮춰야 함.
 
-**Inspiration**: 외부 CDSS MindVault fork 의 LLM-detected contradictions (fact-layer 4-type 중 detection 부분만 차용. 4-type 메모리 분류 자체는 v3.5 후보).
+**Inspiration**: 외부 CDSS MindVault fork 의 LLM-detected contradictions (fact-layer 4-type 중 detection 부분만 차용. 4-type 메모리 분류는 이번 범위 밖 (현재 detection 만 구현)).
 
 - **Known limitations**: review CLI resolve 는 single-writer 가정 (동시 resolve / resolve-중-append race 미보호, 드뭄·재검출로 복구). supersede audit-trace 는 staged stem 기록 (promote 후 stale, decay 기능은 정상). backfill `--memory-dir custom` 은 prod index 인덱싱된 dir 만 유효.
 
