@@ -101,7 +101,7 @@ def test_hybrid_search_logs_debug_on_recall_failure(tmp_path, monkeypatch):
 
     def boom(query, top_k):
         raise RuntimeError("simulated DB down")
-    monkeypatch.setattr("src.memory_search.recall_memory", boom)
+    monkeypatch.setattr("memory_search.recall_memory", boom)
 
     result = _hybrid_search("any query", tmp_path)
     assert result == []

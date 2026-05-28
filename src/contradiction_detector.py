@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.memory_compiler import GEMMA_MODEL, GEMMA_TIMEOUT, GEMMA_URL
+from memory_compiler import GEMMA_MODEL, GEMMA_TIMEOUT, GEMMA_URL
 
 
 def _runtime_dir() -> Path:
@@ -138,7 +138,7 @@ def _hybrid_search(query: str, mem_dir: Path, top_k: int = 5) -> list[tuple[Path
     mem_dir filter: 결과 path 중 mem_dir subtree 안의 것만 (cross-project 잡음 제거).
     실패 시 빈 list + debug.log 에 사유 기록 (silent loss 방지).
     """
-    from src import memory_search
+    import memory_search
     try:
         results = memory_search.recall_memory(query, top_k=top_k)
     except Exception as e:
