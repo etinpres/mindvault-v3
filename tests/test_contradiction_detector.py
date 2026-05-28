@@ -489,3 +489,53 @@ def test_call_gemma_valid_response_still_works(monkeypatch):
         lambda req, timeout=None: _FakeResp({"choices": [{"message": {"content": "  hello  "}}]}),
     )
     assert contradiction_detector._call_gemma_for_classify("prompt") == "hello"
+
+
+# --- _relevant_excerpt (long-body truncation fix) ---
+
+def test_relevant_excerpt_short_text_unchanged():
+    """≤limit 텍스트는 그대로 반환 (기존 짧은 메모리 동작 보존)."""
+    from src.contradiction_detector import _relevant_excerpt
+    t = "짧은 메모리 본문입니다. hit rate 66.3%."
+    assert _relevant_excerpt(t, query="hit rate", limit=1500) == t
+
+
+def test_relevant_excerpt_picks_relevant_chunk_over_head():
+    """긴 본문에서 query 토큰이 몰린 뒤쪽 청크를 head 대신 선택."""
+    from src.contradiction_detector import _relevant_excerpt
+    head = "맥락 없는 머리말. " * 200          # ~2000+ chars, query 무관
+    tail = "Layer 4 hook 의 picked hit rate 는 66.3% 이다."
+    text = head + tail
+    out = _relevant_excerpt(text, query="hit rate 66.3 picked", limit=800)
+    assert "66.3%" in out
+    assert len(out) <= 800
+
+
+def test_relevant_excerpt_includes_frontmatter_description():
+    """frontmatter description 이 gist 헤더로 항상 포함."""
+    from src.contradiction_detector import _relevant_excerpt
+    text = ('---\nname: project-x\ndescription: "MindVault v3 진척 트래커"\n---\n'
+            + "본문 채우기. " * 400 + " 특정지표 alias_index 동기화 patterns.")
+    out = _relevant_excerpt(text, query="alias_index 동기화", limit=900)
+    assert "MindVault v3 진척 트래커" in out
+    assert "alias_index" in out
+
+
+def test_relevant_excerpt_no_overlap_falls_back_to_head():
+    """query 토큰 겹침 0 이면 head fallback (silent loss 방지)."""
+    from src.contradiction_detector import _relevant_excerpt
+    text = "시작부분 표식 ABCSTART. " + ("무관 본문. " * 400)
+    out = _relevant_excerpt(text, query="zzz 전혀없는토큰 qqqq", limit=500)
+    assert "ABCSTART" in out  # head 유지
+    assert len(out) <= 500
+
+
+def test_relevant_excerpt_deep_metric_now_visible():
+    """동기 사례: 21K자 트래커 후반의 metric 이 head-truncation 너머라도 발췌됨."""
+    from src.contradiction_detector import _relevant_excerpt
+    filler = "프로젝트 진척 노트 라인. " * 1500   # ~20K chars
+    deep = "\n[2026-05-25] Layer 4 hook hit rate = 66.3%, p50 latency 40ms."
+    text = filler + deep
+    assert len(text) > 20000
+    out = _relevant_excerpt(text, query="Layer 4 hook hit rate latency", limit=1500)
+    assert "66.3%" in out and "latency" in out

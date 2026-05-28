@@ -26,6 +26,7 @@ def _runtime_dir() -> Path:
 
 CONFIDENCE_THRESHOLD = 0.7  # 미만은 review queue 제외 (false positive 회피)
 BODY_EXCERPT_CHARS = 200    # contradictions.jsonl 에 저장할 body 발췌 길이
+CLASSIFY_BODY_LIMIT = 1500  # classify prompt 에 넣는 body 당 char 예산 (Gemma 4K context 여유)
 
 
 _CLASSIFY_PROMPT = """메모리 시스템의 두 항목이 진짜로 충돌하는지 판단하세요.
@@ -274,12 +275,76 @@ def _strip_code_fences(text: str) -> str:
     return m.group(1) if m else text
 
 
+_TOKEN_RE = re.compile(r"[가-힣]{2,}|[A-Za-z0-9.]{2,}")
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+
+
+def _excerpt_tokens(text: str) -> set[str]:
+    """비교용 토큰 집합 — 한글 음절 run + 영숫자 run (length ≥ 2), lowercase."""
+    return {m.group(0).lower() for m in _TOKEN_RE.finditer(text)}
+
+
+def _relevant_excerpt(text: str, query: str, limit: int = CLASSIFY_BODY_LIMIT) -> str:
+    """`text` 중 `query` 와 가장 관련된 ≤limit 자 발췌.
+
+    긴 메모리(예: 20K 자 프로젝트 트래커)는 충돌 주장이 head 1500 자 너머에 묻혀
+    naive head-truncation 으로는 분류기가 못 본다. query 토큰 겹침이 가장 큰 window 를
+    고르고, frontmatter description(요지)을 항상 앞에 붙여 주제 맥락을 잃지 않게 한다.
+    순수 Python·결정적. 짧은 text(≤limit)는 그대로 반환 → 기존 동작 보존.
+    """
+    if len(text) <= limit:
+        return text
+
+    qtokens = _excerpt_tokens(query)
+
+    # frontmatter description 을 gist 헤더로 (있으면). 토큰 없거나 매칭 0이면 head fallback.
+    header = ""
+    body = text
+    m = _FRONTMATTER_RE.match(text)
+    if m:
+        fm, body = m.group(1), text[m.end():]
+        dm = re.search(r"^\s*description\s*:\s*(.+)$", fm, re.MULTILINE)
+        if dm:
+            header = "[description] " + dm.group(1).strip().strip('"')[:300] + "\n\n"
+
+    if not qtokens:
+        return (header + body)[:limit]
+
+    # query 토큰을 body 내 희소도로 가중 — 희귀 토큰(예: 특정 수치 "66.3")이 흔한
+    # 토큰("hook" 이 트래커에 50번)보다 변별력 크다. 안 그러면 term-dense window 가
+    # 정작 충돌 값 없는 곳으로 쏠림 (project_mindvault 실측).
+    blow = body.lower()
+    weights = {t: 1.0 / c for t in qtokens if (c := blow.count(t)) > 0}
+    if not weights:
+        return (header + body)[:limit]  # query 토큰이 body 에 전무 → head fallback
+
+    win = max(200, limit - len(header))
+    step = max(1, win // 2)
+    best_start, best_score = 0, -1.0
+    for start in range(0, max(1, len(body)), step):
+        chunk = body[start:start + win]
+        if not chunk:
+            break
+        clow = chunk.lower()
+        score = sum(w for t, w in weights.items() if t in clow)
+        if score > best_score:
+            best_score, best_start = score, start
+    if best_score <= 0:
+        return (header + body)[:limit]  # no overlap → head fallback
+    excerpt = body[best_start:best_start + win]
+    prefix = "…" if best_start > 0 else ""
+    return (header + prefix + excerpt)[:limit]
+
+
 def _classify_pair(new_body: str, old_body: str) -> dict | None:
     """두 body 비교 후 {'kind', 'reason', 'confidence'} 반환. failure → None.
 
-    body 는 1500자까지만 prompt 에 포함 (Gemma 4K context 여유).
+    각 body 는 상대 body 와 가장 관련된 ≤CLASSIFY_BODY_LIMIT 자 청크로 발췌해 prompt 에
+    포함 (긴 메모리의 깊은 충돌도 분류기가 볼 수 있게). 짧은 body 는 전체 그대로.
     """
-    prompt = _CLASSIFY_PROMPT.format(old=old_body[:1500], new=new_body[:1500])
+    old_excerpt = _relevant_excerpt(old_body, new_body)
+    new_excerpt = _relevant_excerpt(new_body, old_body)
+    prompt = _CLASSIFY_PROMPT.format(old=old_excerpt, new=new_excerpt)
     raw = _call_gemma_for_classify(prompt)
     if not raw:
         return None
