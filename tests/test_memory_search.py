@@ -113,6 +113,28 @@ class TestRecallMemory(unittest.TestCase):
         names = [r["name"] for r in results]
         self.assertIn("test-mail", names)
 
+    def test_alias_candidate_survives_score_threshold_gate(self):
+        """bug-audit 2026-05-29 (recall-hot-path-5): alias fallback 후보(score=0)가
+        score_threshold(0.50) 게이트를 통과해 회수돼야 한다 (sentinel)."""
+        from memory_search import recall_memory
+        target = str(self.fixture_dir / "feedback_test_mail.md")
+        # vec off(None) + fts 무관 질의 → test-mail 은 alias 로만 후보 진입.
+        # db_path==DB_PATH 일 때만 alias lookup 하므로 DB_PATH 도 tmp 로 patch.
+        with patch("memory_search.embed_text", return_value=None), \
+             patch("memory_search.DB_PATH", self.tmp_db), \
+             patch("memory_search._alias_boost_paths", return_value={target}):
+            results = recall_memory(
+                "zzzqqq 외계어 전혀무관 토큰",
+                top_k=3,
+                score_threshold=0.50,
+                db_path=self.tmp_db,
+            )
+        names = [r["name"] for r in results]
+        self.assertIn(
+            "test-mail", names,
+            "alias 후보가 score_threshold 게이트에서 떨어지면 안 됨 (sentinel 무력)",
+        )
+
     def test_recall_returns_full_schema(self):
         from memory_search import recall_memory
         with patch("memory_search.embed_text", return_value=None):

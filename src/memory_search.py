@@ -577,6 +577,20 @@ def recall_memory(
 
         normalize_scores(combined)
 
+        # bug-audit 2026-05-29 (recall-hot-path-5): alias fallback 후보는 score 가
+        # 0 이라 아래 score_threshold 게이트에서 탈락해 "임베딩 약한 메모리를 alias 로
+        # 복구" 하는 의도가 무력화됐다 (alias raw 를 0.35 로 끌어올려도 score 게이트가
+        # 떨굼). alias 후보의 normalized score 를 게이트 직상으로 올려 통과시킨다.
+        # 최종 ranking 은 raw_cosine 우선 정렬이 결정하므로(alias raw=0.35) 이 sentinel
+        # 은 순위를 왜곡하지 않고 게이트 통과만 보장한다. 일반 score_threshold 게이트
+        # 동작(-1, wikilink 1-hop expansion 차단)은 그대로 둔다 — recall eval 재측정 후
+        # 별도 튜닝 대상.
+        if score_threshold > 0:
+            for bp in alias_paths:
+                info_bp = combined.get(bp)
+                if info_bp is not None and info_bp["score"] < score_threshold:
+                    info_bp["score"] = score_threshold
+
         # raw cosine 게이트: 의미적 무관 path 차단.
         # Sprint 12: fts source도 raw_cosine 검사 적용 (단어 우연 매칭으로 잡담이
         # fts-only hit으로 통과하는 회귀 차단). fts source인 경우 임계를 절반으로
