@@ -5,6 +5,7 @@ JSONL 세션 로그를 SQLite FTS5에 인덱싱한다. mtime + size 변경된 �
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import re
 import sqlite3
@@ -42,6 +43,12 @@ def iter_jsonl_paths(root: Path = PROJECTS_ROOT):
 DATA_DIR = Path(_os_paths.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
 DB_PATH = DATA_DIR / "index.db"
 DEBUG_LOG = DATA_DIR / "debug.log"
+# bug-audit 2026-05-29 (indexing-session-indexer-no-lock-1): 세션 인덱서는
+# trigger_background_indexer 가 락 없이 detach spawn 하므로 동시 실행 가능했다.
+# WAL 로 동시 write 가 안전해졌어도 두 인덱서가 같은 jsonl 을 중복 스캔·임베딩하는
+# 낭비가 남는다. memory-indexer.lock 과 동형의 flock(LOCK_NB)으로 직렬화 (별도
+# 락 파일이라 memory 인덱서와는 독립).
+SESSION_LOCK_PATH = DATA_DIR / "session-indexer.lock"
 SIGNATURE = "# 지난 세션 요약 (MindVault v3)"
 SCHEMA_VERSION = 3
 # Sprint 6: 임베딩은 첫 N turn(user/assistant) 기준. 세션 의도는 앞쪽에 몰리고
@@ -372,6 +379,37 @@ def _embed_session_from_path(jsonl_path: Path) -> bytes | None:
 # WAL 모드라 commit 부하는 무시 가능 (수백 session 인덱싱 12s 수준).
 
 
+def _session_lock_path(db_path: Path) -> Path:
+    """db_path 페어 lock — production 은 DATA_DIR/session-indexer.lock, 테스트는
+    tmp_db 페어로 분리해 production 오염 차단 (memory_indexer._lock_path_for 동형)."""
+    if Path(db_path).resolve() == DB_PATH.resolve():
+        return SESSION_LOCK_PATH
+    return Path(db_path).parent / "session-indexer.lock"
+
+
+def _acquire_session_lock(db_path: Path):
+    """flock(LOCK_NB) — 동시 세션 인덱서 차단. 못 잡으면 None."""
+    lock_path = _session_lock_path(db_path)
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fh = lock_path.open("w")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fh
+    except (BlockingIOError, OSError):
+        try:
+            fh.close()
+        except (OSError, NameError, UnboundLocalError):
+            pass
+        return None
+
+
+def _release_session_lock(fh) -> None:
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    finally:
+        fh.close()
+
+
 def incremental_index(
     projects_root: Path = PROJECTS_ROOT,
     db_path: Path = DB_PATH,
@@ -379,7 +417,15 @@ def incremental_index(
     if not projects_root.is_dir():
         _debug(f"projects root missing: {projects_root}")
         return 0
-    conn = open_db(db_path)
+    lock = _acquire_session_lock(db_path)
+    if lock is None:
+        _debug("session-indexer lock busy — skip")
+        return 0
+    try:
+        conn = open_db(db_path)
+    except Exception:
+        _release_session_lock(lock)  # open_db 실패 시 락 누수 방지
+        raise
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
     updated = 0
     vec_updated = 0
@@ -451,6 +497,7 @@ def incremental_index(
         conn.commit()
     finally:
         conn.close()
+        _release_session_lock(lock)
     if vec_updated:
         _debug(f"vec updated: {vec_updated}")
     return updated

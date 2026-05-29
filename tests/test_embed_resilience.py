@@ -41,6 +41,32 @@ class TestOpenDbWAL(unittest.TestCase):
             self.assertEqual(mode.lower(), "wal")
 
 
+class TestSessionIndexerLock(unittest.TestCase):
+    """indexing-session-indexer-no-lock-1: 동시 세션 인덱서 직렬화."""
+
+    def test_lock_busy_skips_second_indexer(self):
+        import indexer
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "index.db"
+            held = indexer._acquire_session_lock(db)
+            self.assertIsNotNone(held)
+            try:
+                # 락이 잡힌 동안 incremental_index 는 즉시 0 으로 skip
+                projects = Path(d) / "projects"
+                (projects / "slot").mkdir(parents=True)
+                (projects / "slot" / "s.jsonl").write_text(
+                    '{"type":"user","message":{"content":"본문 충분히 김"},"timestamp":"2026-01-01T00:00:00"}\n'
+                )
+                rc = indexer.incremental_index(projects, db)
+                self.assertEqual(rc, 0, "락 점유 중엔 incremental_index 가 skip(0) 해야")
+            finally:
+                indexer._release_session_lock(held)
+            # 락 해제 후엔 정상 인덱싱
+            with patch("memory_indexer.embed_text", side_effect=_fake_embed):
+                rc2 = indexer.incremental_index(projects, db)
+            self.assertEqual(rc2, 1)
+
+
 class TestSessionBackfillEmbedFail(unittest.TestCase):
     """임베딩 서버 장애 중 backfill 이 세션을 영구 제외(sentinel)하지 않는다."""
 
