@@ -220,6 +220,82 @@ class _StubIdx:
         return {"updated": 0, "skipped": 0, "removed": 0}
 
 
+class TestDedupDataLossGuards(unittest.TestCase):
+    """bug-audit 2026-05-29 — merge/backup 데이터 유실 방지 회귀."""
+
+    def test_merge_aborts_when_all_compiles_fail(self):
+        """dedup-merge-1 / -empty-6: Gemma 통합이 전부 실패하면 삭제·overwrite 없이 중단."""
+        from dedup_cli import cmd_merge
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            d1 = Path(tmp) / "r1"; d1.mkdir()
+            d2 = Path(tmp) / "r2"; d2.mkdir()
+            old = _write_memory(d1, "old", "same topic", "v1 본문")
+            new = _write_memory(d2, "new", "same topic", "v2 본문")
+            os.utime(old, (1_700_000_000, 1_700_000_000))
+            os.utime(new, (1_800_000_000, 1_800_000_000))
+            buf = io.StringIO()
+            with patch("dedup_cli.DEFAULT_MEMORY_DIRS", [d1, d2]), \
+                 patch("dedup_cli._extra_memory_dirs", return_value=[]), \
+                 patch("memory_compiler._call_gemma", return_value=""), \
+                 patch.dict("sys.modules", {"memory_indexer": _StubIdx()}), \
+                 patch("sys.stdout", buf):
+                rc = cmd_merge("same topic", dry_run=False)
+            self.assertEqual(rc, 1)
+            out = json.loads(buf.getvalue())
+            self.assertFalse(out["ok"])
+            # 데이터 유실 없음 — 두 파일 모두 살아있고 .bak 도 안 생김
+            self.assertTrue(old.is_file())
+            self.assertTrue(new.is_file())
+            self.assertFalse((old.with_suffix(".md.bak")).exists())
+            self.assertFalse((new.with_suffix(".md.bak")).exists())
+
+    def test_merge_preserves_supersedes_frontmatter(self):
+        """dedup-merge-2: canonical 의 supersedes/deprecated_by 가 overwrite 후 보존."""
+        from dedup_cli import cmd_merge
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            d1 = Path(tmp) / "r1"; d1.mkdir()
+            d2 = Path(tmp) / "r2"; d2.mkdir()
+            old = _write_memory(d1, "old", "same topic", "v1 본문")
+            new = d2 / "new.md"
+            new.write_text(
+                "---\nname: same topic\ndescription: x\ntype: project\n"
+                "supersedes: [old-thing, other-thing]\ndeprecated_by: [replacer]\n---\nv2 본문",
+                encoding="utf-8",
+            )
+            os.utime(old, (1_700_000_000, 1_700_000_000))
+            os.utime(new, (1_800_000_000, 1_800_000_000))
+            buf = io.StringIO()
+            with patch("dedup_cli.DEFAULT_MEMORY_DIRS", [d1, d2]), \
+                 patch("dedup_cli._extra_memory_dirs", return_value=[]), \
+                 patch("memory_compiler._call_gemma", return_value="통합본"), \
+                 patch.dict("sys.modules", {"memory_indexer": _StubIdx()}), \
+                 patch("sys.stdout", buf):
+                rc = cmd_merge("same topic", dry_run=False)
+            self.assertEqual(rc, 0)
+            txt = new.read_text()
+            self.assertIn("supersedes: [old-thing, other-thing]", txt)
+            self.assertIn("deprecated_by: [replacer]", txt)
+            self.assertIn("통합본", txt)
+
+    def test_backup_rotates_existing_bak(self):
+        """dedup-backup-3: 기존 .bak 이 있으면 회전 보존 후 새 .bak 작성."""
+        from dedup_cli import _backup
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "memo.md"
+            target.write_text("version 2 content")
+            (Path(tmp) / "memo.md.bak").write_text("version 1 (previous backup)")
+            new_bak = _backup(target)
+            self.assertEqual(new_bak.read_text(), "version 2 content")
+            rotated = [
+                r for r in Path(tmp).glob("memo.md.bak.*")
+                if not r.name.endswith(".tmp")
+            ]
+            self.assertTrue(rotated, "직전 .bak 이 회전 보존되지 않음")
+            self.assertEqual(rotated[0].read_text(), "version 1 (previous backup)")
+
+
 class TestDedupAtomicWrites(unittest.TestCase):
     """v3.2.6 Round 3 NR2: dedup_cli._backup 와 canonical overwrite 가 atomic.
 

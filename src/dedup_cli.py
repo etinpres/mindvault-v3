@@ -118,6 +118,25 @@ def _sort_by_freshness(entries: list[dict]) -> list[dict]:
     return sorted(entries, key=lambda e: (e["mtime"], e["size"]), reverse=True)
 
 
+def _serialize_fm_value(v) -> str:
+    """frontmatter 값을 메모리 컨벤션 형식 문자열로 직렬화 (dedup-merge-2).
+
+    - list → flow-style `[a, b]` (supersedes/deprecated_by 가 쓰는 형식. 항목은
+      stem slug 라 공백/콤마/따옴표 없음).
+    - dict → yaml flow `{k: v}` (metadata 등 nested).
+    - scalar → str(v).
+    줄바꿈은 frontmatter 라인 구조를 깨므로 공백으로 치환.
+    """
+    if isinstance(v, list):
+        return "[" + ", ".join(str(x) for x in v) + "]"
+    if isinstance(v, dict):
+        import yaml as _yaml
+        return _yaml.safe_dump(
+            v, default_flow_style=True, allow_unicode=True
+        ).strip()
+    return str(v).replace("\n", " ").strip()
+
+
 def cmd_list() -> int:
     result = _scan()
     summary = {
@@ -138,6 +157,17 @@ def _backup(path: Path) -> Path:
     # v3.2.8: finally — KeyboardInterrupt 도 tmp orphan 차단.
     bak = path.with_suffix(path.suffix + ".bak")
     tmp = path.with_suffix(path.suffix + ".bak.tmp")
+    # bug-audit 2026-05-29 (dedup-backup-3): 기존 .bak 이 있으면 덮어쓰기 전에
+    # 타임스탬프 사본으로 회전해 직전(유일) 복구본 소실을 막는다. 첫 백업(.bak 부재)은
+    # 그대로 .bak 에 착지 → 기존 동작·테스트 계약 유지. 같은 초 재호출 시 회전본이
+    # 이미 있으면 회전 스킵(드문 edge — 같은 path 동일초 중복 백업).
+    if bak.exists():
+        rotated = bak.parent / (bak.name + "." + time.strftime("%Y%m%d-%H%M%S"))
+        try:
+            if not rotated.exists():
+                os.replace(bak, rotated)
+        except OSError:
+            pass
     content = path.read_text(encoding="utf-8")
     try:
         tmp.write_text(content, encoding="utf-8")
@@ -174,6 +204,10 @@ def cmd_merge(name_key: str, dry_run: bool = False) -> int:
     from memory_compiler import _compile_update  # noqa: WPS433
     merged_body = canon_body
     compile_log = []
+    # bug-audit 2026-05-29 (dedup-merge-1): compile 에 성공해 canonical 본문으로
+    # 병합된 other 만 삭제 대상에 넣는다. compile 실패한 other 의 본문은 canonical
+    # 에 들어가지 않았으므로 삭제하면 영구 유실 (이전엔 실패해도 전부 삭제했음).
+    merged_others: list[Path] = []
     for other in others:
         try:
             other_text = other.read_text(encoding="utf-8")
@@ -192,11 +226,12 @@ def cmd_merge(name_key: str, dry_run: bool = False) -> int:
             })
             continue
         merged_body = new_body
+        merged_others.append(other)
         compile_log.append({"path": str(other), "ok": True})
 
     plan = {
         "canonical": str(canonical),
-        "drop": [str(p) for p in others],
+        "drop": [str(p) for p in merged_others],
         "compile_log": compile_log,
         "merged_body_chars": len(merged_body),
     }
@@ -206,13 +241,39 @@ def cmd_merge(name_key: str, dry_run: bool = False) -> int:
         sys.stdout.write("\n")
         return 0
 
+    # bug-audit 2026-05-29 (dedup-merge-1 / dedup-merge-empty-6): 데이터 유실 가드.
+    # 통합 성공한 other 가 하나도 없거나(예: Gemma 다운으로 전부 실패) merged_body 가
+    # 비면 canonical overwrite/삭제를 시작하지 않고 중단한다. 이전엔 Gemma 가 죽어도
+    # canonical 을 빈/원본 본문으로 덮고 others 를 전부 지워 그룹이 통째로 유실됐다.
+    if not merged_others or not merged_body.strip():
+        plan.update({
+            "ok": False,
+            "error": "merge aborted: no successful compile (data-loss guard)",
+        })
+        json.dump(plan, sys.stdout, ensure_ascii=False, indent=2)
+        sys.stdout.write("\n")
+        return 1
+
     # canonical 도 .bak 백업 후 overwrite (Compiler 와 동일 안전 패턴)
     _backup(canonical)
+    # bug-audit 2026-05-29 (dedup-merge-2): name/description/type 외의 frontmatter
+    # (supersedes / deprecated_by / metadata 등 audit link)를 보존해 재방출. 이전엔
+    # 세 키만 다시 써서 canonical 의 deprecation/supersede 링크가 통째로 소실됐다.
+    # parse_frontmatter 가 yaml 기반이라 list 는 Python list 로 들어오므로 flow-style
+    # ([a, b]) 로 직렬화 — 이 메모리를 읽는 memory_indexer(yaml)·_is_deprecated(regex)
+    # ·contradiction_review_cli 가 기대하는 형식과 일치.
+    _core_keys = {"name", "description", "type"}
+    extra_lines = "".join(
+        f"{k}: {_serialize_fm_value(v)}\n"
+        for k, v in canon_fm.items()
+        if k not in _core_keys and v is not None
+    )
     final_fm = (
         "---\n"
         f"name: {canon_fm.get('name', canonical.stem)}\n"
         f"description: {canon_fm.get('description', canon_fm.get('name', canonical.stem))}\n"
         f"type: {canon_fm.get('type', 'project')}\n"
+        f"{extra_lines}"
         "---\n\n"
         f"{merged_body.rstrip()}\n"
     )
@@ -229,7 +290,7 @@ def cmd_merge(name_key: str, dry_run: bool = False) -> int:
             pass
 
     dropped = []
-    for o in others:
+    for o in merged_others:
         _backup(o)
         try:
             o.unlink()
