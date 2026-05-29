@@ -399,14 +399,26 @@ def append_to_review_queue(
     out.parent.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    # bug-audit 2026-05-29 (contradiction-jsonl-race-1): append 를 review CLI 의
+    # _mark_resolved(read-modify-rewrite)와 같은 lock 파일(<queue>.lock)에서 직렬화.
+    # 이전엔 데이터 파일 자체 fd 에 flock 했으나, _mark_resolved 는 tmp+os.replace 로
+    # 데이터 파일을 새 inode 로 교체하므로 같은 락을 공유하지 못했다 — append 가 read
+    # 와 replace 사이에 끼면 replace 가 그 row 를 덮어 유실시켰다. 별도 lock 파일을
+    # 양측이 LOCK_EX 로 잡아 상호 배제한다.
+    lock_path = out.with_name(out.name + ".lock")
     try:
-        with out.open("a", encoding="utf-8") as f:
+        lock_fh = open(lock_path, "w")
+    except OSError as e:
+        _debug(f"queue lock open fail: {type(e).__name__}: {e}")
+        lock_fh = None
+    try:
+        if lock_fh is not None:
             try:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
             except OSError as e:
                 _debug(f"queue flock fail: {type(e).__name__}: {e}")
                 # Continue without lock — better single-writer integrity than full skip
-
+        with out.open("a", encoding="utf-8") as f:
             for c in contradictions:
                 f.write(json.dumps({
                     "ts": ts,
@@ -421,8 +433,13 @@ def append_to_review_queue(
                     "old_excerpt": c.old_body_excerpt,
                     "resolved": False,
                 }, ensure_ascii=False) + "\n")
-            # flock auto-released on file close
     except OSError as e:
         _debug(f"queue append fail: {type(e).__name__}: {e}")
+    finally:
+        if lock_fh is not None:
+            try:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                lock_fh.close()
 
     return out

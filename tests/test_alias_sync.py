@@ -212,5 +212,26 @@ class TestDiscoverMemoryDirs(unittest.TestCase):
         self.assertEqual(count, 1)
 
 
+class TestExtractMemoryMetaUnquote(unittest.TestCase):
+    """bug-audit 2026-05-29 (embeddings-alias-7): frontmatter 값의 양끝 따옴표 제거."""
+
+    def test_quoted_name_and_description_unquoted(self):
+        import alias_generator
+        d = Path(tempfile.mkdtemp(prefix="mv3-meta-"))
+        p = d / "m.md"
+        p.write_text(
+            '---\nname: "My Memory"\ndescription: "콜론: 포함된 요지"\ntype: feedback\n---\n\nbody\n',
+            encoding="utf-8",
+        )
+        name, desc, _body = alias_generator._extract_memory_meta(p)
+        self.assertEqual(name, "My Memory")
+        self.assertEqual(desc, "콜론: 포함된 요지")  # 콜론은 보존, 따옴표만 제거
+
+    def test_unquoted_values_unchanged(self):
+        import alias_generator
+        self.assertEqual(alias_generator._unquote_fm("plain value"), "plain value")
+        self.assertEqual(alias_generator._unquote_fm("'single'"), "single")
+
+
 if __name__ == "__main__":
     unittest.main()

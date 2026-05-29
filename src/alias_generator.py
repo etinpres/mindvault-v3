@@ -270,12 +270,26 @@ def _extract_memory_meta(md_path: Path) -> tuple[str, str, str] | None:
     desc = ""
     for ln in fm.splitlines():
         if ln.startswith("name:"):
-            name = ln[5:].strip()
+            name = _unquote_fm(ln[5:].strip())
         elif ln.startswith("description:"):
-            desc = ln[12:].strip()
+            desc = _unquote_fm(ln[12:].strip())
     if not name:
         return None
     return name, desc, body
+
+
+def _unquote_fm(v: str) -> str:
+    """frontmatter 스칼라 값의 양끝 짝 따옴표 제거 (embeddings-alias-7).
+
+    line-scan 파서가 `description: "foo"` 를 그대로 슬라이스하면 따옴표가 desc 에
+    남아 alias 프롬프트 품질을 떨어뜨린다. yaml.safe_load 전면 교체는 nested
+    metadata/깨진 frontmatter 에서 실패 표면이 달라져 회귀 위험이 있으므로, 짝맞는
+    양끝 따옴표만 제거하는 최소 처리로 한정.
+    """
+    v = v.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+        return v[1:-1]
+    return v
 
 
 def generate(
@@ -390,7 +404,12 @@ def _save(data: dict) -> None:
     v3.2.8: try/finally — KeyboardInterrupt/SystemExit 도 tmp orphan 차단.
     """
     INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = INDEX_PATH.with_suffix(".json.tmp")
+    # bug-audit 2026-05-29 (embeddings-alias-2): tmp 파일명을 프로세스 고유로.
+    # 이전 고정 ".json.tmp" 는 동시 SessionEnd(예: sibling Conductor workspaces)가
+    # 같은 tmp 에 동시 write 하거나, 한 쪽 finally 의 unlink 가 다른 쪽 write 중 tmp 를
+    # 지워 os.replace 가 깨져 alias_index 가 손상/유실됐다. PID-고유 tmp 로 분리
+    # (contradiction_review_cli.py 의 검증된 패턴과 동일).
+    tmp = INDEX_PATH.with_name(f"{INDEX_PATH.name}.{os.getpid()}.tmp")
     try:
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
         os.replace(tmp, INDEX_PATH)

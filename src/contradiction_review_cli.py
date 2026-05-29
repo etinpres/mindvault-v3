@@ -171,6 +171,40 @@ def _BLOCK_LIST_RE(key: str) -> re.Pattern:
     )
 
 
+def _SCALAR_VALUE_RE(key: str) -> re.Pattern:
+    """Detect a scalar (non-list) value: ``key: somevalue`` whose value is not a
+    flow list ``[...]``.
+
+    bug-audit 2026-05-29 (contradiction-scalar-dup-3): such a key matches neither
+    the flow-list regex nor _BLOCK_LIST_RE, so _patch_frontmatter_list would fall
+    to the else-branch and append a duplicate ``key: [..]`` line — a last-key-wins
+    YAML corruption that drops the original scalar value. Treated like block-style:
+    refuse to mutate (user must convert to flow list first). The negative lookahead
+    ``(?!\\[)`` lets genuine flow lists (``key: [a, b]``) through.
+    """
+    return re.compile(rf"^{re.escape(key)}:[ \t]+(?!\[)\S", re.MULTILINE)
+
+
+def _log_refuse_mutate(p: Path, key: str, style: str) -> None:
+    """Telemetry: refused to mutate a non-flow-list frontmatter key (block/scalar)."""
+    try:
+        import os as _os
+        import time as _time
+        log_path = Path(
+            _os.environ.get("MV3_RUNTIME_DIR")
+            or (Path.home() / ".claude" / "mindvault-v3")
+        ) / "debug.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        ts = _time.strftime("%Y-%m-%d %H:%M:%S")
+        with log_path.open("a", encoding="utf-8") as logf:
+            logf.write(
+                f"[{ts}] contradiction-cli: refuse to mutate {style} "
+                f"YAML value {key!r} in {p}\n"
+            )
+    except OSError:
+        pass
+
+
 def _can_patch_frontmatter_list(p: Path, key: str) -> bool:
     """Dry validation: would ``_patch_frontmatter_list(p, key, ...)`` succeed?
 
@@ -184,7 +218,7 @@ def _can_patch_frontmatter_list(p: Path, key: str) -> bool:
     fm, _ = _split_frontmatter(text)
     if not fm:
         return False
-    if _BLOCK_LIST_RE(key).search(fm):
+    if _BLOCK_LIST_RE(key).search(fm) or _SCALAR_VALUE_RE(key).search(fm):
         return False
     return True
 
@@ -203,24 +237,13 @@ def _patch_frontmatter_list(p: Path, key: str, value: str) -> bool:
     if not fm:
         return False
 
-    # Refuse to mutate block-style YAML lists — would silently create duplicate keys.
+    # Refuse to mutate block-style OR scalar YAML values — naive append would
+    # silently create a duplicate key (last-key-wins corruption). flow-list only.
     if _BLOCK_LIST_RE(key).search(fm):
-        try:
-            import os as _os
-            log_path = Path(
-                _os.environ.get("MV3_RUNTIME_DIR")
-                or (Path.home() / ".claude" / "mindvault-v3")
-            ) / "debug.log"
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            import time
-            ts = time.strftime("%Y-%m-%d %H:%M:%S")
-            with log_path.open("a", encoding="utf-8") as logf:
-                logf.write(
-                    f"[{ts}] contradiction-cli: refuse to mutate block-style "
-                    f"YAML list {key!r} in {p}\n"
-                )
-        except OSError:
-            pass
+        _log_refuse_mutate(p, key, "block-style")
+        return False
+    if _SCALAR_VALUE_RE(key).search(fm):
+        _log_refuse_mutate(p, key, "scalar")
         return False
 
     line_re = re.compile(rf"^{re.escape(key)}:\s*\[(.*?)\]\s*$", re.MULTILINE)
@@ -365,39 +388,57 @@ def _mark_resolved(target_item: dict, new_status: str) -> bool:
     p = _queue_path()
     if not p.exists():
         return False
-    raw_lines = p.read_text(encoding="utf-8").splitlines()
 
-    out_lines: list[str] = []
-    matched = False
-    for line in raw_lines:
-        if not line.strip():
-            # preserve blank lines verbatim
-            out_lines.append(line)
-            continue
-        try:
-            d = json.loads(line)
-        except json.JSONDecodeError:
-            # Fix I-jsonl-loss: keep malformed lines verbatim, never drop them.
-            out_lines.append(line)
-            continue
-        if not matched and _row_matches_target(d, target_item):
-            d["resolved"] = new_status
-            matched = True
-        out_lines.append(json.dumps(d, ensure_ascii=False))
-    if not matched:
-        return False
-
-    tmp = p.with_suffix(f".jsonl.{os.getpid()}.tmp")
+    # bug-audit 2026-05-29 (contradiction-jsonl-race-1): read-modify-rewrite 를
+    # 공용 lock 파일 하에서 직렬화. 이전엔 tmp FD 에 flock 해(라이브 파일과 다른
+    # inode라 무의미) read 와 os.replace 사이에 concurrent SessionEnd 의
+    # append_to_review_queue 가 추가한 row 가 replace 로 덮여 유실됐다. append 측도
+    # 같은 lock 파일(<queue>.lock)을 LOCK_EX 로 잡으므로 두 연산이 직렬화된다.
+    lock_path = p.with_name(p.name + ".lock")
     try:
-        with tmp.open("w", encoding="utf-8") as f:
+        lock_fh = open(lock_path, "w")
+    except OSError:
+        lock_fh = None
+    try:
+        if lock_fh is not None:
             try:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
             except OSError:
                 pass  # best-effort lock
-            f.write("\n".join(out_lines) + "\n")
-        os.replace(tmp, p)
-    except OSError:
-        return False
+
+        raw_lines = p.read_text(encoding="utf-8").splitlines()
+        out_lines: list[str] = []
+        matched = False
+        for line in raw_lines:
+            if not line.strip():
+                # preserve blank lines verbatim
+                out_lines.append(line)
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                # Fix I-jsonl-loss: keep malformed lines verbatim, never drop them.
+                out_lines.append(line)
+                continue
+            if not matched and _row_matches_target(d, target_item):
+                d["resolved"] = new_status
+                matched = True
+            out_lines.append(json.dumps(d, ensure_ascii=False))
+        if not matched:
+            return False
+
+        tmp = p.with_suffix(f".jsonl.{os.getpid()}.tmp")
+        try:
+            tmp.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+            os.replace(tmp, p)
+        except OSError:
+            return False
+    finally:
+        if lock_fh is not None:
+            try:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                lock_fh.close()
     return True
 
 

@@ -446,6 +446,29 @@ def test_patch_frontmatter_flow_style_still_works_after_block_guard(tmp_path):
     assert "supersedes: [a, b]" in content
 
 
+def test_patch_frontmatter_refuses_scalar_value(tmp_path):
+    """bug-audit 2026-05-29 (contradiction-scalar-dup-3): scalar 'key: value' 형태는
+    flow/block 어느 정규식에도 안 잡혀 중복 key append → YAML 손상. 거부해야 함."""
+    from src.contradiction_review_cli import (
+        _patch_frontmatter_list,
+        _can_patch_frontmatter_list,
+    )
+
+    p = tmp_path / "x.md"
+    p.write_text(
+        "---\nname: x\nsupersedes: bar\ntype: feedback\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    original = p.read_text(encoding="utf-8")
+
+    assert _can_patch_frontmatter_list(p, "supersedes") is False
+    ok = _patch_frontmatter_list(p, "supersedes", "newstem")
+    assert ok is False, "scalar 값은 거부해야 (중복 key 생성 방지)"
+    content = p.read_text(encoding="utf-8")
+    assert content == original, "거부 시 파일 불변이어야"
+    assert content.count("supersedes:") == 1, "supersedes 키가 2개로 늘면 안 됨"
+
+
 # ---------------------------------------------------------------------------
 # v3.4 static-audit sweep (5 latent defects + tmp pid minor)
 # ---------------------------------------------------------------------------
