@@ -401,6 +401,24 @@ def incremental_index(
                 vec_body = embed_text(body) if body.strip() else None
                 vec_desc = embed_text(description) if description.strip() else None
 
+                # bug-audit 2026-05-29 (embeddings-alias-1 / embeddings-alias-6):
+                # 임베딩 서버 일시 장애로 embed_text 가 None 을 반환했는데도 아래에서
+                # mtime_ns 를 갱신해버리면, 다음 incremental_index 가 mtime 일치로 이
+                # 메모리를 skip 해 vec 가 영구히 비게 되고 semantic recall 에서 영구
+                # 누락된다. 본문/description 이 실제로 있는데 vec 가 비었으면(=embed
+                # 실패) 이번 건을 통째로 건너뛰어 mtime/FTS/vec 어느 것도 건드리지
+                # 않는다 → 파일 mtime 이 stored mtime 과 계속 달라 다음 run 이 재시도.
+                # (본문이 원래 비어 vec 가 None 인 정상 케이스는 embed 실패가 아니므로 제외.)
+                # 신규 메모리는 outage 동안 FTS 에도 안 들어가는 트레이드오프가 있으나,
+                # 서버 복구 후 다음 run 에서 정상 인덱싱되며 영구 누락은 막는다.
+                embed_failed = (
+                    (bool(body.strip()) and vec_body is None)
+                    or (bool(description.strip()) and vec_desc is None)
+                )
+                if embed_failed:
+                    _debug(f"embed unavailable, defer reindex: {p.name}")
+                    continue
+
                 conn.execute(
                     "DELETE FROM memories_fts WHERE path=?", (sp,)
                 )

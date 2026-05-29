@@ -312,8 +312,33 @@ def open_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
             pass
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
+    # bug-audit 2026-05-29 (indexing-wal-missing-1): WAL + busy_timeout 설정.
+    # 이전엔 둘 다 미설정이라 index.db 가 기본 journal_mode=DELETE 로 동작 →
+    # 세션 인덱서 / 메모리 인덱서 / embed_cache sub-conn / recall hot path 가
+    # 같은 파일을 동시에 열 때 SQLITE_BUSY 와 'unable to open database file'
+    # (운영 370건+) 빈발. WAL 은 reader 가 writer 를 막지 않게 하고 busy_timeout
+    # 은 짧은 쓰기 락 대기를 흡수한다. extractor_cache.py 의 검증된 패턴과 동일.
+    # WAL 은 DB파일 1회 전환 후 영속, busy_timeout 은 conn 마다 재설정 필요하므로
+    # 모든 open_db 호출에서 설정한다.
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+    except sqlite3.DatabaseError:
+        pass  # 네트워크 FS 등 WAL 미지원 환경 — 기존 동작으로 폴백
     _init_db(conn)
     return conn
+
+
+class EmbedUnavailable(Exception):
+    """임베딩 서버 일시 장애 (timeout/connection refused) — 재시도 대상.
+
+    bug-audit 2026-05-29 (indexing-embed-fail-permanent-sentinel-1): 이전엔
+    '본문 없음'(영구 skip 정당)과 '임베딩 서버 다운'(일시적, 재시도해야 함)이
+    모두 None 으로 합쳐져, backfill 이 서버 다운 중에도 영구 빈-blob sentinel 을
+    박아 해당 세션이 서버 복구 후에도 semantic recall 에서 영구 제외됐다.
+    이 예외로 두 경우를 분리: 본문 없음은 None 반환(영구 sentinel), 서버 장애는
+    예외 발생(sentinel 미기록 → 다음 backfill 재시도).
+    """
 
 
 def _embed_session_from_path(jsonl_path: Path) -> bytes | None:
@@ -321,6 +346,12 @@ def _embed_session_from_path(jsonl_path: Path) -> bytes | None:
 
     SESSION_EMBED_CHARS는 한 turn에 거대 paste가 들어왔을 때 폭주 방지용 안전망.
     memory_indexer.embed_text 재사용 (BGE-M3 서버 호출 + dim 검증).
+
+    Returns:
+        bytes: 정상 임베딩.
+        None: 본문이 비어 임베딩 대상이 아님 (영구 skip — sentinel 정당).
+    Raises:
+        EmbedUnavailable: 임베딩 서버 일시 장애 (재시도 대상 — sentinel 금지).
     """
     head_body = extract_head_turns_body(jsonl_path)
     text = head_body[:SESSION_EMBED_CHARS].strip()
@@ -330,7 +361,7 @@ def _embed_session_from_path(jsonl_path: Path) -> bytes | None:
     from memory_indexer import embed_text, _vec_to_blob  # noqa: WPS433
     vec = embed_text(text)
     if vec is None:
-        return None
+        raise EmbedUnavailable(jsonl_path.name)
     return _vec_to_blob(vec)
 
 
@@ -373,7 +404,12 @@ def incremental_index(
             # Sprint 10: 임베딩(sub-conn embed_cache write 포함)을 메인 conn write보다
             # 먼저 수행. 이전 commit 후 메인 conn이 idle인 동안 sub-conn이 충돌 없이
             # cache_put 가능 → "embed cache put fail: database is locked" 해소.
-            blob = _embed_session_from_path(jsonl)
+            # bug-audit 2026-05-29: 임베딩 서버 일시 장애 시엔 FTS 만 인덱싱하고
+            # vec 는 다음 backfill 이 채우게 한다 (영구 누락 방지).
+            try:
+                blob = _embed_session_from_path(jsonl)
+            except EmbedUnavailable:
+                blob = None
             conn.execute(
                 """
                 INSERT INTO sessions(session_id, file_path, mtime_ns, size_bytes,
@@ -460,7 +496,16 @@ def backfill_session_vecs(db_path: Path = DB_PATH) -> dict[str, int]:
                 continue
             # Sprint 10: 임베딩(sub-conn embed_cache write 포함)을 메인 INSERT 전에 수행.
             # 매 iter 끝에 commit → 다음 iter 시작 시 메인 idle → cache_put BUSY 회피.
-            blob = _embed_session_from_path(jsonl_path)
+            # bug-audit 2026-05-29 (indexing-embed-fail-permanent-sentinel-1):
+            # 임베딩 서버 일시 장애(EmbedUnavailable)는 sentinel 을 박지 않고
+            # failed 카운트만 올린 뒤 다음 backfill 에서 재시도되게 한다. 이전엔
+            # 서버 다운 중 backfill 이 돌면 영구 빈-blob sentinel 이 박혀 서버
+            # 복구 후에도 그 세션이 semantic recall 에서 영구 제외됐다.
+            try:
+                blob = _embed_session_from_path(jsonl_path)
+            except EmbedUnavailable:
+                counts["failed"] += 1
+                continue  # sentinel 미기록 — 다음 backfill 재시도
             if blob is None:
                 counts["failed"] += 1
                 # NEXT-28 (2026-05-24): 본문 추출 결과가 비어있는 jsonl 세션
@@ -468,7 +513,7 @@ def backfill_session_vecs(db_path: Path = DB_PATH) -> dict[str, int]:
                 # 매번 backfill 큐에 다시 잡혀 같은 7건이 무한 재시도되었음.
                 # 빈 blob sentinel을 sessions_vec에 박아 LEFT JOIN IS NULL 쿼리
                 # 에서 제외. 검색 측은 frombuffer shape != EMBED_DIM 분기에서
-                # 자동 skip.
+                # 자동 skip. (본문 없음은 영구 skip 이 정당 — 재시도해도 항상 빈 본문.)
                 conn.execute(
                     "INSERT OR IGNORE INTO sessions_vec(session_id, embedding, indexed_at) VALUES(?,?,?)",
                     (sid, b"", now),
