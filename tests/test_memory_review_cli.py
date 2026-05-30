@@ -301,3 +301,64 @@ def test_approve_update_preserves_existing_provenance(tmp_path, monkeypatch, cap
     assert "captured_at: 2026-01-01T10:00:00" in content, (
         f"existing captured_at was overwritten: {content}"
     )
+
+
+def test_approve_update_provenance_fallback_to_staged(tmp_path, monkeypatch, capsys):
+    """UPDATE path: when existing target has NO provenance, staged provenance is used.
+
+    Coverage-locking test for the ``existing_meta.get(...) or meta.get(...)``
+    fallback in cmd_approve's update branch.  An old pre-fix memory file that
+    was promoted before provenance tracking existed has no source_type/source_ref;
+    after update-approve the promoted file should carry the STAGED provenance.
+    """
+    mem = tmp_path / "memory"
+    (mem / "_staged").mkdir(parents=True)
+    monkeypatch.setenv("MV3_EXTRA_MEMORY_DIRS", str(mem))
+
+    cli = _load_cli(monkeypatch, mem, tmp_path / "data")
+
+    # Existing permanent memory WITHOUT provenance (old pre-fix file)
+    target = mem / "no_prov.md"
+    target.write_text(
+        "---\n"
+        "name: No Prov\n"
+        "description: old desc without provenance\n"
+        "type: feedback\n"
+        "---\n\n"
+        "old body\n",
+        encoding="utf-8",
+    )
+
+    # Staged update WITH provenance (the new session that refined the body)
+    staged = mem / "_staged" / "20260301-000000_feedback_no_prov.md"
+    staged.write_text(
+        "---\n"
+        "name: No Prov\n"
+        "type: feedback\n"
+        f"update_of: {target}\n"
+        "source_type: session\n"
+        "source_ref: fallback-session-id-1234\n"
+        "staged_at: 2026-03-01T09:00:00\n"
+        "---\n\n"
+        "refined body with provenance\n",
+        encoding="utf-8",
+    )
+
+    rc = cli.cmd_approve(staged.name)
+    assert rc == 0
+    res = _capture_json(capsys)
+    assert res.get("ok") is True, res
+    assert res.get("kind") == "update", res
+
+    content = target.read_text(encoding="utf-8")
+    assert "refined body with provenance" in content, "update body not merged"
+    # Staged provenance must be used because existing had none
+    assert "source_type: session" in content, (
+        f"source_type missing (fallback not applied): {content}"
+    )
+    assert "source_ref: fallback-session-id-1234" in content, (
+        f"staged source_ref not used as fallback: {content}"
+    )
+    assert "captured_at:" in content, (
+        f"captured_at missing (from staged_at fallback): {content}"
+    )

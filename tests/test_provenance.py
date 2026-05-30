@@ -351,11 +351,15 @@ def test_backfill_trailing_whitespace_fence_no_crash(tmp_path):
     clean = mem / "clean_fence.md"
     clean.write_text("---\nname: clean\ntype: project\n---\n\nbody\n")
 
-    # Must NOT raise; clean file counted; bad file silently skipped (not crashed)
+    # Must NOT raise; both files counted; both get source_type injected
     n = bf.backfill_dir(mem, dry_run=False)
     assert n >= 1, f"clean file should be counted, got n={n}"
     # clean file must have been processed
     assert "source_type: unknown" in clean.read_text()
+    # trailing-ws fence file must ALSO be backfilled (not skipped)
+    assert "source_type" in bad.read_text(), (
+        "trailing-whitespace fence file was skipped instead of backfilled"
+    )
 
 
 def test_backfill_includes_procedural(tmp_path):

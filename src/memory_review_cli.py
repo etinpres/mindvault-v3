@@ -222,8 +222,11 @@ def _provenance_passthrough(meta: dict) -> str:
     rebuilding frontmatter from scratch and stripping them — breaking the
     completion gate "신규 영구기억 출처 추적률 100%".
 
-    Mirrors ``_supersede_passthrough`` exactly: verbatim re-emit via
-    ``_fm_oneline``, trailing-newline-terminated (or "" when absent).
+    Mirrors the passthrough PATTERN of ``_supersede_passthrough``
+    (preserve keys through frontmatter rebuild, trailing-newline-terminated
+    or "" when absent), but uses ``_fm_oneline`` for single-line safety on
+    every value — unlike ``_supersede_passthrough`` which emits
+    ``str(val).strip()`` directly.
     """
     extra = ""
     source_type = (meta.get("source_type") or "").strip()
