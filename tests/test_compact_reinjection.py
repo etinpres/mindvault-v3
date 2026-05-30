@@ -267,15 +267,27 @@ def test_realistic_post_compaction_transcript_yields_real_prompt(tmp_path):
 # --- F4/F16: per-turn cap + tail-keep 으로 최신 발화 보존 ---------------------
 
 def test_extract_query_preserves_newest_turn_under_large_old_turns(tmp_path):
+    """tail-keep + per-turn cap 둘 다 핀 — truncation 을 실제로 강제하는 fixture.
+    (head-keep 으로 바꾸거나 per-turn cap 을 제거하면 각각 다른 assert 가 실패해야 함.)"""
+    import re as _re
     import session_memory as sm
     t = tmp_path / "s.jsonl"
+    # 4개 턴 모두 길게(>MAX_MSG_CHARS) + 최신 턴 시작에 키워드, 본문은 'Z' 5000개
     _write_raw(t, [
-        {"type": "user", "message": {"content": "오래된거 " + "A" * 5000}},
-        {"type": "user", "message": {"content": "두번째 " + "B" * 5000}},
-        {"type": "user", "message": {"content": "최신 진짜 의도 키워드 ZZZZ"}},
+        {"type": "user", "message": {"content": "OLDA " + "A" * 5000}},
+        {"type": "user", "message": {"content": "OLDB " + "B" * 5000}},
+        {"type": "user", "message": {"content": "OLDC " + "C" * 5000}},
+        {"type": "user", "message": {"content": "NEWESTKW " + "Z" * 5000}},
     ])
     q = sm.extract_compact_query(t)
-    assert "최신 진짜 의도 키워드 ZZZZ" in q  # 앞에서 잘렸으면 실패
+    # (a) tail-keep: 최신 턴 시작 키워드 생존 (head-keep 이면 1200 안에 안 들어와 실패)
+    assert "NEWESTKW" in q
+    # (b) per-turn cap: 최신 턴 본문이 MAX_MSG_CHARS 로 잘림 → 최장 연속 Z ≤ cap
+    #     (cap 제거 시 tail 1200 이 전부 Z 라 최장 Z=1200 > 400 → 실패, 동시에 키워드도 사라져 (a) 도 실패)
+    longest_z = max((len(m.group(0)) for m in _re.finditer(r"Z+", q)), default=0)
+    assert longest_z <= sm.MAX_MSG_CHARS
+    # (c) tail-keep: 가장 오래된 턴 키워드는 잘려나감
+    assert "OLDA" not in q
     assert len(q) <= sm.COMPACT_QUERY_MAX_CHARS
 
 
@@ -344,16 +356,25 @@ def test_compact_recall_time_budget_skips_on_slow(tmp_path, monkeypatch, capsys)
 # --- F9: chat/meta 의도면 recall 전 스킵 -------------------------------------
 
 def test_compact_honors_intent_skip(tmp_path, monkeypatch, capsys):
+    """intent skip 시 recall_memory 가 *호출 안 됨* 을 spy 플래그로 검증.
+    sentinel 을 raise 하면 handle 의 broad except 가 삼켜 vacuous-pass 가 되므로
+    (round-2 audit), 예외 대신 mutable flag 로 관측한다."""
     import session_memory as sm
     import memory_search
     import query_intent
     t = tmp_path / "s.jsonl"
     _write_raw(t, [{"type": "user", "message": {"content": "충분히 긴 어떤 질의 텍스트입니다"}}])
     monkeypatch.setattr(query_intent, "should_skip_recall", lambda obj: True)
-    monkeypatch.setattr(memory_search, "recall_memory",
-                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("recall ran despite intent skip")))
+    ran = {}
+
+    def _spy(*a, **k):
+        ran["hit"] = True
+        return []
+
+    monkeypatch.setattr(memory_search, "recall_memory", _spy)
     rc = sm.handle_compact_reinjection({"transcript_path": str(t)})
     assert rc == 0
+    assert ran.get("hit") is None, "intent-skip 제거 시 recall 이 불려 이 assert 가 실패해야 함(mutation 감지)"
     assert capsys.readouterr().out == ""
 
 
@@ -367,3 +388,25 @@ def test_format_memory_context_scalar_source_not_char_split():
     )
     assert "v+e+c" not in out  # 스칼라가 글자단위 분해되면 안 됨
     assert "vec" in out
+
+
+# --- round-2 fix: intent 는 join-blob 이 아니라 최신 genuine 턴만 classify --------
+
+def test_compact_intent_classifies_latest_turn_only(tmp_path, monkeypatch):
+    """oldest 턴의 인사말/meta 어구가 join-blob 을 오분류해 잘못 스킵하면 안 됨.
+    classify 가 받는 텍스트가 *최신 턴* 이고 oldest 턴을 포함하지 않음을 직접 검증."""
+    import session_memory as sm
+    import memory_search
+    import query_intent
+    t = tmp_path / "s.jsonl"
+    _write_raw(t, [
+        {"type": "user", "message": {"content": "안녕 인사말 오래된턴"}},          # oldest
+        {"type": "user", "message": {"content": "최신진짜의도LATEST 분석 요청"}},   # latest
+    ])
+    seen = {}
+    monkeypatch.setattr(query_intent, "classify", lambda txt: (seen.update(arg=txt), object())[1])
+    monkeypatch.setattr(query_intent, "should_skip_recall", lambda obj: False)
+    monkeypatch.setattr(memory_search, "recall_memory", lambda *a, **k: [])
+    sm.handle_compact_reinjection({"transcript_path": str(t)})
+    assert "최신진짜의도LATEST" in seen.get("arg", "")
+    assert "안녕 인사말" not in seen.get("arg", "")  # join-blob 이면 둘 다 포함 → 실패

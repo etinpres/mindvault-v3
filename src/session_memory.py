@@ -530,16 +530,14 @@ def _resolve_transcript(hook_data: dict) -> Path | None:
     return None
 
 
-def extract_compact_query(transcript: Path,
-                          recent_user_turns: int = COMPACT_RECENT_USER_TURNS) -> str:
-    """현재 세션 transcript 에서 *genuine* user 발화 N개를 합쳐 회수 query 로 만든다.
+def _recent_genuine_turns(transcript: Path, recent_user_turns: int) -> list:
+    """transcript 에서 오염원 제거 후 마지막 N개 *genuine* user 발화를 redact+per-turn
+    캡(MAX_MSG_CHARS)해 oldest→newest 리스트로 반환.
 
-    압축 직후 transcript 오염원을 제거한다 — (1) 최상위 isCompactSummary=True 요약
-    메시지(대화로부터 생성된 거라 query 로 쓰면 recall-on-recalled), (2) 시스템
-    리마인더, (3) 스킬 본문·command/local-command 스캐폴딩, (4) 우리 자신의 SIGNATURE/
-    COMPACT_SIGNATURE 블록. deque(maxlen=N) 로 마지막 N개 genuine 발화만 보존해 redact
-    호출을 N→k 로 줄이고, 각 발화를 per-turn 캡(MAX_MSG_CHARS)한 뒤 join → 가장 최근
-    발화가 길이 truncation 으로 사라지지 않게 tail-keep 한다.
+    압축 직후 transcript 오염원 — (1) 최상위 isCompactSummary=True 요약 메시지(대화
+    로부터 파생 → recall-on-recalled), (2) 시스템 리마인더, (3) 스킬 본문·command/
+    local-command 스캐폴딩, (4) 우리 자신의 SIGNATURE/COMPACT_SIGNATURE 블록 — 을 스킵.
+    deque(maxlen=N) 로 redact 호출을 N→k 로 제한.
     """
     recent: deque = deque(maxlen=max(1, recent_user_turns))
     try:
@@ -549,10 +547,7 @@ def extract_compact_query(transcript: Path,
                     d = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if d.get("type") != "user":
-                    continue
-                # 압축 요약 메시지(최상위 isCompactSummary)는 대화로부터 파생 → 스킵
-                if d.get("isCompactSummary"):
+                if d.get("type") != "user" or d.get("isCompactSummary"):
                     continue
                 msg = d.get("message") or {}
                 text = extract_text_from_content(msg.get("content")).strip()
@@ -563,11 +558,19 @@ def extract_compact_query(transcript: Path,
                 recent.append(text)  # raw 보존 — redact 는 최종 선택분에만
     except OSError as e:
         _debug(f"compact transcript read failed: {e}")
+        return []
+    return [redact(t)[:MAX_MSG_CHARS] for t in recent]
+
+
+def extract_compact_query(transcript: Path,
+                          recent_user_turns: int = COMPACT_RECENT_USER_TURNS) -> str:
+    """현재 세션 transcript 에서 *genuine* user 발화 N개를 합쳐 회수 query 로 만든다.
+
+    오염원 제거·per-turn 캡은 _recent_genuine_turns 가 담당. 가장 최근 발화가 길이
+    truncation 으로 사라지지 않게 tail-keep (앞에서 자르면 최신이 날아감)."""
+    capped = _recent_genuine_turns(transcript, recent_user_turns)
+    if not capped:
         return ""
-    if not recent:
-        return ""
-    # per-turn 캡 후 join, tail-keep 으로 최신 발화 보존 (앞에서 자르면 최신이 날아감)
-    capped = [redact(t)[:MAX_MSG_CHARS] for t in recent]
     query = "\n".join(capped).strip()
     return query[-COMPACT_QUERY_MAX_CHARS:]
 
@@ -595,12 +598,10 @@ def handle_compact_reinjection(hook_data: dict) -> int:
         if transcript is None:
             _debug("compact: transcript 미해결 → skip")
             return 0
-        query = extract_compact_query(transcript)
-        if len(query) < COMPACT_MIN_QUERY_LEN:
-            _debug(f"compact: query too short ({len(query)}) → skip")
-            return 0
 
-        # 배포본(scripts/mindvault) + repo(src) 둘 다 import 경로에 추가
+        # 배포본(scripts/mindvault) + repo(src) 둘 다 import 경로에 추가.
+        # import 는 예산(SIGALRM) 밖에서 — alarm 이 import 중 발화하면 sys.modules 에
+        # partial 모듈이 남을 수 있어 분리한다.
         for d in (
             Path(os.environ.get("MV3_SCRIPTS_DIR", "~/.claude/scripts/mindvault")).expanduser(),
             Path(__file__).resolve().parent.parent / "src",
@@ -608,48 +609,62 @@ def handle_compact_reinjection(hook_data: dict) -> int:
             if d.is_dir() and str(d) not in sys.path:
                 sys.path.insert(0, str(d))
         import recall_core
-
-        # chat/meta 의도면 회수 스킵 (Layer 4 와 일관 — 토큰낭비 방어). rule-based
-        # classify 만 사용(빠름). import 실패해도 graceful (스킵 안 함).
-        try:
-            from query_intent import classify, should_skip_recall
-            if should_skip_recall(classify(query)):
-                _debug("compact: intent chat/meta → skip")
-                return 0
-        except Exception:
-            pass
-
         from memory_search import recall_memory
-
-        raw_min = (
-            recall_core.RAW_COSINE_MIN_HINTED
-            if recall_core.has_recall_hint(query)
-            else recall_core.RAW_COSINE_MIN_DEFAULT
-        )
-        # hard time budget — cold/hung Arctic embed(5s)가 compaction 재개를 블로킹
-        # 못하게. SIGALRM 은 메인스레드 전용이며 hook 은 메인스레드 실행(확인됨).
-        signal.signal(signal.SIGALRM, _compact_alarm)
-        signal.setitimer(signal.ITIMER_REAL, COMPACT_BUDGET_S)
+        # query_intent 는 optional — 실패해도 진행
         try:
+            from query_intent import classify as _qi_classify, should_skip_recall as _qi_skip
+        except Exception:
+            _qi_classify = _qi_skip = None
+
+        # hard time budget — transcript O(N) parse + cold/hung Arctic embed(5s) 전체를
+        # cover 해 compaction 재개를 블로킹 못하게. SIGALRM 은 메인스레드 전용이며 hook
+        # 은 메인스레드 실행(확인됨); 비-main 이면 ValueError → except Exception graceful.
+        signal.signal(signal.SIGALRM, _compact_alarm)
+        try:
+            signal.setitimer(signal.ITIMER_REAL, COMPACT_BUDGET_S)
+            capped = _recent_genuine_turns(transcript, COMPACT_RECENT_USER_TURNS)
+            if not capped:
+                _debug("compact: genuine user 발화 없음 → skip")
+                return 0
+            query = "\n".join(capped).strip()[-COMPACT_QUERY_MAX_CHARS:]
+            if len(query) < COMPACT_MIN_QUERY_LEN:
+                _debug(f"compact: query too short ({len(query)}) → skip")
+                return 0
+
+            # chat/meta 의도면 스킵 (Layer 4 와 일관 — 토큰낭비 방어). join-blob 이
+            # 아니라 *최신 genuine 턴*만 classify — query_intent 는 단일 prompt 설계라
+            # oldest 턴의 인사말/meta 어구가 전체를 오분류하던 문제 차단.
+            if _qi_classify is not None and _qi_skip is not None:
+                try:
+                    if _qi_skip(_qi_classify(capped[-1])):
+                        _debug("compact: intent chat/meta (latest turn) → skip")
+                        return 0
+                except Exception:
+                    pass
+
+            raw_min = (
+                recall_core.RAW_COSINE_MIN_HINTED
+                if recall_core.has_recall_hint(query)
+                else recall_core.RAW_COSINE_MIN_DEFAULT
+            )
             results = recall_memory(
                 query,
                 top_k=recall_core.COMPACT_TOP_K,
                 score_threshold=recall_core.SCORE_THRESHOLD,
                 raw_cosine_min=raw_min,
             )
+            if not results:
+                _debug("compact: recall picked 0 → skip")
+                return 0
+            block = recall_core.format_memory_context(
+                results, intro=COMPACT_INTRO, wrap_system_reminder=True
+            )
+            emit_compact_context(f"{COMPACT_SIGNATURE}\n\n{block}")
+            _debug(f"compact: re-injected {len(results)} mem (query_len={len(query)})")
+            return 0
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
-        if not results:
-            _debug("compact: recall picked 0 → skip")
-            return 0
-        block = recall_core.format_memory_context(
-            results, intro=COMPACT_INTRO, wrap_system_reminder=True
-        )
-        emit_compact_context(f"{COMPACT_SIGNATURE}\n\n{block}")
-        _debug(f"compact: re-injected {len(results)} mem (query_len={len(query)})")
-        return 0
     except _CompactTimeout:
-        signal.setitimer(signal.ITIMER_REAL, 0)
         _debug(f"compact: budget {COMPACT_BUDGET_S}s exceeded → skip")
         return 0
     except Exception as e:
