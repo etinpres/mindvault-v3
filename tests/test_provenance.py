@@ -480,43 +480,66 @@ def test_recall_source_ref_normalized_to_str(tmp_path):
 
 
 def test_backfill_multiline_ref_collapses_to_single_line(tmp_path):
-    """Item 2: a YAML block-scalar session-id value containing newlines must be
+    """Item 2: a YAML block-scalar session-id value containing REAL newlines must be
     collapsed to a single line before injection, so the resulting source_ref: line
-    re-parses cleanly (no embedded newline)."""
+    re-parses cleanly (no embedded newline).
+
+    Uses a YAML block scalar (| style) so yaml.safe_load preserves embedded newlines
+    in the parsed value — this GENUINELY exercises the re.sub(r"\\s+"," ",...) collapse
+    path in backfill_file().  The old fixture used a flow-folded scalar that yaml folded
+    to a single line before the code ever saw it, making the test vacuous.
+    """
     from src import provenance_backfill_cli as bf
-    from memory_review_cli import parse_frontmatter as pf
+    from memory_indexer import parse_frontmatter as pf
     mem = tmp_path / "memory"; mem.mkdir()
     p = mem / "multiline_ref.md"
-    # Write a file where the session id spans two lines (block-scalar style)
-    # The raw text has a literal '\n' embedded in the value we want to simulate.
-    # Use staged_from_session; backfill reads it via _find_session_ref → str(value).
-    # We set a value that str() would include a newline (simulate multi-line yaml).
+    # YAML block scalar: yaml.safe_load gives originSessionId == "abc123\ndef456\n"
+    # (literal newline embedded).  _find_session_ref priority-2 picks originSessionId.
     p.write_text(
         "---\n"
         "name: multiline\n"
         "type: project\n"
-        "staged_from_session: abcd1234\n  extra-line-junk\n"
+        "originSessionId: |\n"
+        "  abc123\n"
+        "  def456\n"
         "---\n\n"
         "body\n",
         encoding="utf-8",
     )
-    # Must not raise; file should be processed
+
+    # Confirm yaml.safe_load actually preserves the newline (test self-check).
+    import yaml as _yaml
+    raw_fm = _yaml.safe_load(
+        "name: multiline\ntype: project\noriginSessionId: |\n  abc123\n  def456\n"
+    )
+    assert "\n" in raw_fm["originSessionId"], (
+        "Fixture self-check failed: yaml.safe_load must preserve embedded newline "
+        f"in block scalar, got {raw_fm['originSessionId']!r}"
+    )
+
+    # Run backfill — must process exactly 1 file.
     n = bf.backfill_dir(mem, dry_run=False)
-    if n == 1:
-        text = p.read_text(encoding="utf-8")
-        # source_ref line must not contain an embedded newline character
-        for line in text.splitlines():
-            if line.startswith("source_ref:"):
-                assert "\n" not in line, f"source_ref line contains embedded newline: {line!r}"
-                # The value (after the colon) must have no embedded newlines
-                _, val = line.split(":", 1)
-                assert "\n" not in val, f"source_ref value contains newline: {val!r}"
-        # The file must re-parse without losing frontmatter
-        fm, body = pf(text)
-        assert "source_ref" in fm
-        assert "\n" not in fm["source_ref"], (
-            f"source_ref in parsed frontmatter contains newline: {fm['source_ref']!r}"
-        )
+    assert n == 1, f"Expected 1 file injected, got {n}"
+
+    text = p.read_text(encoding="utf-8")
+
+    # 1. The source_ref: line itself must be a single line (no embedded \n).
+    source_ref_lines = [l for l in text.splitlines() if l.startswith("source_ref:")]
+    assert source_ref_lines, "source_ref: line not found after backfill"
+    assert len(source_ref_lines) == 1, (
+        f"Expected exactly one source_ref: line, got {len(source_ref_lines)}: {source_ref_lines}"
+    )
+
+    # 2. The file re-parses via parse_frontmatter without error.
+    fm, body = pf(text)
+    assert "source_ref" in fm, "source_ref key missing from re-parsed frontmatter"
+
+    # 3. The parsed source_ref value has its newlines collapsed to spaces.
+    sr = fm["source_ref"]
+    assert "\n" not in sr, f"source_ref still contains newline after collapse: {sr!r}"
+    assert sr == "abc123 def456", (
+        f"source_ref not properly collapsed: expected 'abc123 def456', got {sr!r}"
+    )
 
 
 def test_e2e_staged_to_recall_label(tmp_path):

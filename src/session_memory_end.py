@@ -199,8 +199,8 @@ def make_contradiction_aware_writer(base_writer, mem_dir: Path):
     write itself is never blocked, only the detect/append step is skipped.
     """
 
-    def wrapped(item, session_id, slug_override=None):
-        staged_path = base_writer(item, session_id, slug_override=slug_override)
+    def wrapped(item, session_id, slug_override=None, **kwargs):
+        staged_path = base_writer(item, session_id, slug_override=slug_override, **kwargs)
         if not staged_path:
             return staged_path  # dedup skip or write failure — no detection
 

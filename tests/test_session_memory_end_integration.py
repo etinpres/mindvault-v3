@@ -173,3 +173,43 @@ def test_writer_runs_detection_when_disable_env_not_set(tmp_path, fake_write_sta
     wrapped(item, "sid", slug_override="x")
 
     assert len(detect_calls) == 1
+
+
+def test_contradiction_writer_forwards_provenance_kwargs(tmp_path, monkeypatch):
+    """Fix D: make_contradiction_aware_writer must forward extra kwargs (source_type,
+    source_ref) to base_writer so Phase-2 callers (e.g. URL ingest) don't silently
+    lose provenance through the wrapper.
+
+    Strategy: capture kwargs received by a fake base_writer, disable contradiction
+    detection so it doesn't interfere, then assert source_type/source_ref arrived.
+    """
+    from session_memory_end import make_contradiction_aware_writer
+
+    # Capture the kwargs that base_writer receives.
+    received: list[dict] = []
+
+    def fake_base(item, session_id, slug_override=None, **kwargs):
+        p = tmp_path / "memory" / f"{item.get('slug','x')}.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f"---\nname: {item.get('slug','x')}\n---\n\nbody\n",
+                     encoding="utf-8")
+        received.append(kwargs)
+        return p
+
+    # Disable contradiction detection to keep test focused.
+    monkeypatch.setenv("MV3_CONTRADICTION_DISABLE", "1")
+
+    mem_dir = tmp_path / "memory"
+    mem_dir.mkdir(exist_ok=True)
+    wrapped = make_contradiction_aware_writer(fake_base, mem_dir)
+
+    item = {"slug": "url-item", "title": "T", "body": "B", "type": "fact"}
+    wrapped(item, "sid-url", source_type="url", source_ref="https://example.com/article")
+
+    assert len(received) == 1, "base_writer must have been called exactly once"
+    assert received[0].get("source_type") == "url", (
+        f"source_type not forwarded; base_writer got kwargs={received[0]!r}"
+    )
+    assert received[0].get("source_ref") == "https://example.com/article", (
+        f"source_ref not forwarded; base_writer got kwargs={received[0]!r}"
+    )
