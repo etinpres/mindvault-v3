@@ -2,7 +2,7 @@
 
 > Claude Code의 영구 기억 시스템. 5-layer 파이프라인으로 세션 요약 자동 주입 · 자연어 검색 · Memory Compiler · 자동 회수 · 모순 감지까지.
 
-**v3.4.1** · Karpathy LLM-as-Compiler 패턴 실증 · macOS (Apple Silicon) · MIT license · 599 passed + 25 subtests
+**v3.5.0** · Karpathy LLM-as-Compiler 패턴 실증 · macOS (Apple Silicon) · MIT license · 639 passed + 25 subtests
 
 ---
 
@@ -47,7 +47,7 @@ MindVault v3는 그 망각의 빈 자리를 네 축으로 메웁니다:
 
 | Layer | 책임 |
 |---|---|
-| **L1 — SessionStart 자동 주입** | 최근 5 세션을 Gemma로 요약해 새 세션에 자동 주입. 캐시 히트 ~50ms |
+| **L1 — SessionStart 자동 주입** | 최근 5 세션을 Gemma로 요약해 새 세션에 자동 주입. 캐시 히트 ~50ms. **compaction 직후(`source=compact`)엔 요약 대신 현재 세션 관련 메모리만 경량 재주입 (v3.5+)** — 압축으로 사라진 회수 맥락 복원 |
 | **L2 — `/recall` 자연어 검색** | JSONL FTS5 + Gemma 재순위 (sessions), Arctic-ko 임베딩 + FTS5 hybrid RRF (memory) |
 | **L3 — Memory Compiler** | SessionEnd → Gemma 정제 → `memory/_procedural/_staged/` → `/memory_review` 승인 후 영구 진입 |
 | **L4 — UserPromptSubmit hook** | 매 메시지 hybrid 검색 → 관련 메모리 system-reminder 주입. raw cosine 게이트 + query intent classifier가 잡담 차단 (false positive 0%) |
