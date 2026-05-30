@@ -672,7 +672,8 @@ fi
 # 만 실행하면 hook 이 ImportError 로 silent fail 했음.
 #
 # 분류:
-#  - hook 직접 import: query_intent (memory-recall.py)
+#  - hook 직접 import: query_intent (memory-recall.py),
+#                      recall_core (memory-recall + session_memory compact 재주입 공용 게이트)
 #  - extractor 체인: extractor_cache, memory_compiler (session-memory-end)
 #  - turn 분할 캐시: turns_cache (recall_cli / search)
 #  - Sprint 16+: sources_cli (영구 source 등록), backfill_cli (vec 백필),
@@ -682,6 +683,7 @@ fi
 #                        contradiction_review_cli (사용자 review CLI)
 RUNTIME_EXTRA_SRC=(
   "$REPO_DIR/src/query_intent.py"
+  "$REPO_DIR/src/recall_core.py"
   "$REPO_DIR/src/extractor_cache.py"
   "$REPO_DIR/src/memory_compiler.py"
   "$REPO_DIR/src/turns_cache.py"

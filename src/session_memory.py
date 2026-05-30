@@ -17,6 +17,31 @@ import time
 import traceback
 from pathlib import Path
 
+# compact 재주입 경로(source=compact)는 memory_search → numpy/sqlite_vec 가 필요.
+# launchd/Claude hook 컨텍스트에서 PATH 가 numpy 없는 python3 를 잡을 수 있어,
+# numpy 보유 interpreter 로 1회 재실행한다 (memory-recall.py 와 동일 패턴).
+# 단 요약 경로는 numpy 불필요하므로, numpy python 을 못 찾아도 exit 하지 않고
+# 그대로 진행한다 — compact 만 graceful skip 된다.
+if "MV3_HOOK_REEXEC" not in os.environ:
+    try:
+        import numpy as _probe_numpy  # noqa: F401
+    except ImportError:
+        for _cand in (
+            "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3",
+            "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3",
+            "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+        ):
+            if os.path.exists(_cand) and os.path.realpath(_cand) != os.path.realpath(sys.executable):
+                os.environ["MV3_HOOK_REEXEC"] = "1"
+                try:
+                    os.execv(_cand, [_cand, __file__] + sys.argv[1:])
+                except OSError:
+                    continue
+        # numpy python 미발견 — 요약 경로는 numpy 불필요하니 그대로 진행.
+
+
 def _default_projects_dir() -> Path:
     """현재 사용자 $HOME 으로부터 Claude Code 프로젝트 슬롯 경로 파생.
     예: HOME=/Users/alice → ~/.claude/projects/-Users-alice/.
@@ -438,6 +463,129 @@ def trigger_bge_m3_warmup() -> None:
         _debug(f"bge-m3 warmup spawn failed: {e}")
 
 
+# --- compact 재주입 (SessionStart source=compact) ---------------------------
+# PreCompact hook 은 압축 이후 컨텍스트에 살아남는 additionalContext 를 주입할 수
+# 없다 (공식: decision 필드만). 압축 직후 SessionStart 가 source="compact" 로 다시
+# fire 하고, 이때 hookSpecificOutput.additionalContext 가 fresh 컨텍스트에 남는다.
+# 그래서 재주입은 여기서 처리한다 — SessionStart 가 matcher="*" 로 등록돼 있어
+# compact source 도 이미 이 hook 으로 들어온다 (settings 등록 변경 불필요).
+COMPACT_SIGNATURE = "# 압축 후 메모리 재주입 (MindVault v3)"
+COMPACT_INTRO = (
+    "MEMORY CONTEXT — 컨텍스트 압축 직후 재주입. 아래는 이 세션 최근 맥락과 "
+    "관련된 영구 메모리다. 본 답변 reasoning 에 반드시 통합:"
+)
+COMPACT_RECENT_USER_TURNS = 4
+COMPACT_QUERY_MAX_CHARS = 1200
+COMPACT_MIN_QUERY_LEN = 8
+
+
+def _resolve_transcript(hook_data: dict) -> Path | None:
+    """현재 세션 transcript 경로 해석. hook 입력의 transcript_path 우선,
+    없으면 session_id 로 PROJECTS_DIR 안에서 추정."""
+    tp = (hook_data.get("transcript_path") or "").strip()
+    if tp:
+        p = Path(tp).expanduser()
+        if p.is_file():
+            return p
+    sid = hook_data.get("session_id") or hook_data.get("sessionId")
+    if sid:
+        cand = PROJECTS_DIR / f"{sid}.jsonl"
+        if cand.is_file():
+            return cand
+    return None
+
+
+def extract_compact_query(transcript: Path,
+                          recent_user_turns: int = COMPACT_RECENT_USER_TURNS) -> str:
+    """현재 세션 transcript 에서 최근 user 발화 N개를 합쳐 회수 query 로 만든다.
+    시스템 리마인더·지난세션 요약 블록은 extract_text_from_content 가 스킵한다."""
+    users: list[str] = []
+    try:
+        with transcript.open() as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if d.get("type") != "user":
+                    continue
+                msg = d.get("message") or {}
+                text = extract_text_from_content(msg.get("content")).strip()
+                if not text or SIGNATURE in text or COMPACT_SIGNATURE in text:
+                    continue
+                users.append(redact(text))
+    except OSError as e:
+        _debug(f"compact transcript read failed: {e}")
+        return ""
+    if not users:
+        return ""
+    query = "\n".join(users[-recent_user_turns:]).strip()
+    return query[:COMPACT_QUERY_MAX_CHARS]
+
+
+def emit_compact_context(text: str) -> None:
+    payload = {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": text,
+        }
+    }
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False))
+    sys.stdout.flush()
+
+
+def handle_compact_reinjection(hook_data: dict) -> int:
+    """source=='compact' 경로 — 무거운 5세션 요약 대신, 현재 세션 최근 user 턴으로
+    hybrid recall 을 돌려 관련 메모리만 경량 재주입한다.
+
+    실패·빈 query·빈 결과는 모두 silent (추가 컨텍스트 없이 exit 0). numpy 없는
+    interpreter 면 memory_search import 가 실패해 graceful skip 된다.
+    """
+    try:
+        transcript = _resolve_transcript(hook_data)
+        if transcript is None:
+            _debug("compact: transcript 미해결 → skip")
+            return 0
+        query = extract_compact_query(transcript)
+        if len(query) < COMPACT_MIN_QUERY_LEN:
+            _debug(f"compact: query too short ({len(query)}) → skip")
+            return 0
+
+        # 배포본(scripts/mindvault) + repo(src) 둘 다 import 경로에 추가
+        for d in (
+            Path(os.environ.get("MV3_SCRIPTS_DIR", "~/.claude/scripts/mindvault")).expanduser(),
+            Path(__file__).resolve().parent.parent / "src",
+        ):
+            if d.is_dir() and str(d) not in sys.path:
+                sys.path.insert(0, str(d))
+        import recall_core
+        from memory_search import recall_memory
+
+        raw_min = (
+            recall_core.RAW_COSINE_MIN_HINTED
+            if recall_core.has_recall_hint(query)
+            else recall_core.RAW_COSINE_MIN_DEFAULT
+        )
+        results = recall_memory(
+            query,
+            top_k=recall_core.COMPACT_TOP_K,
+            score_threshold=recall_core.SCORE_THRESHOLD,
+            raw_cosine_min=raw_min,
+        )
+        if not results:
+            _debug("compact: recall picked 0 → skip")
+            return 0
+        block = recall_core.format_memory_context(
+            results, intro=COMPACT_INTRO, wrap_system_reminder=True
+        )
+        emit_compact_context(f"{COMPACT_SIGNATURE}\n\n{block}")
+        _debug(f"compact: re-injected {len(results)} mem (query_len={len(query)})")
+        return 0
+    except Exception as e:
+        _debug(f"compact reinjection FATAL {type(e).__name__}: {e}")
+        return 0
+
+
 def main() -> int:
     # 무한 재귀 차단: 자기 자신의 claude -p 안에서 발동된 sub-session의 SessionStart hook은 즉시 skip
     if os.environ.get(RECURSION_GUARD_ENV) == "1":
@@ -476,6 +624,12 @@ def main() -> int:
                         f"(agent_type={hook_data.get('agent_type')!r}); skip summary"
                     )
                     return 0
+                # 압축 직후 SessionStart 는 source="compact" 로 fire — 무거운 5세션
+                # 요약 대신 현재 세션 관련 메모리만 경량 재주입한다 (B 후보).
+                source = (hook_data.get("source") or "").strip().lower()
+                if source == "compact":
+                    _debug("SessionStart source=compact → compact 재주입 경로")
+                    return handle_compact_reinjection(hook_data)
             except json.JSONDecodeError as e:
                 _debug(f"hook_input json parse failed: {e}")
 
