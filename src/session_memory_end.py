@@ -120,7 +120,8 @@ def existing_slugs() -> set[str]:
 
 
 def write_staged(
-    item: dict, session_id: str, slug_override: str | None = None
+    item: dict, session_id: str, slug_override: str | None = None,
+    source_type: str = "session", source_ref: str | None = None,
 ) -> Path | None:
     """staged 파일 작성. slug_override 로 충돌 회피 suffix 부여 가능 (Sprint NEXT-6)."""
     staged_dir = staged_dir_for(item["type"])
@@ -144,6 +145,8 @@ def write_staged(
         f"staged_from_session: {session_id[:8]}",
         f"reason: {_fm_oneline(item['reason'])}",
         f"evidence: {_fm_oneline(item['evidence'])}",
+        f"source_type: {_fm_oneline(source_type)}",
+        f"source_ref: {_fm_oneline(source_ref or session_id)}",
     ]
     # Sprint 14: memory compiler 가 부착한 update 메타 보존. review CLI 가
     # update_of 보고 diff/approve 분기.
