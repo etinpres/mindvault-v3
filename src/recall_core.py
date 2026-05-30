@@ -72,7 +72,10 @@ def format_memory_context(
     """
     if not results:
         return ""
-    body = [intro, ""]
+    # intro 도 sanitize — 현재는 하드코딩 상수라 비악용이나, </system-reminder> 누출
+    # 방지 계약을 모든 출력 텍스트에 일관 적용 (defense-in-depth). 상수엔 close-tag 가
+    # 없어 byte 출력 불변 → Layer 4 parity 유지.
+    body = [sanitize(intro), ""]
     for r in results:
         # source 는 항상 list(recall_memory)지만, 스칼라 'vec' 가 오면 "+".join 이
         # 'v+e+c' 로 글자단위 분해된다. isinstance 가드(or [] 만으론 truthy 비-list 못 막음).

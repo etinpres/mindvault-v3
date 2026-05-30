@@ -358,7 +358,10 @@ def main() -> int:
             pass
         return 0
     t0 = time.time()
-    signal.signal(signal.SIGALRM, _alarm_handler)
+    # 이전 핸들러 저장→finally 복원: 안 하면 _alarm_handler 가 프로세스에 남아 이후
+    # stray SIGALRM 이 무관 코드에서 _Timeout(BaseException)을 던진다 (단발 hook 은
+    # 무해하나 장수 인터프리터=pytest 에서 flaky). compact 경로와 동일 패턴.
+    _prev_sigalrm = signal.signal(signal.SIGALRM, _alarm_handler)
     signal.setitimer(signal.ITIMER_REAL, HARD_TIMEOUT_MS / 1000.0)
 
     try:
@@ -487,6 +490,14 @@ def main() -> int:
         return 0
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
+        # 이전 SIGALRM 핸들러 복원 (누수 차단). _prev None 이면 SIG_DFL.
+        try:
+            signal.signal(
+                signal.SIGALRM,
+                _prev_sigalrm if _prev_sigalrm is not None else signal.SIG_DFL,
+            )
+        except (TypeError, ValueError, OSError):
+            pass
 
 
 if __name__ == "__main__":

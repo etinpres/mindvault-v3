@@ -138,12 +138,23 @@ def test_handle_compact_passes_compact_top_k(tmp_path, monkeypatch, capsys):
     assert seen["raw_cosine_min"] == recall_core.RAW_COSINE_MIN_DEFAULT
 
 
-def test_handle_compact_short_query_skips(tmp_path, capsys):
+def test_handle_compact_short_query_skips(tmp_path, monkeypatch, capsys):
+    """길이 게이트(COMPACT_MIN_QUERY_LEN)만으로 스킵됨을 핀 — intent 게이트를 False 로
+    중화하고 recall spy 로 '길이 때문에 recall 미호출' 을 관측 (mutation: 길이게이트
+    제거 시 recall 호출돼 실패)."""
     import session_memory as sm
+    import memory_search
+    import query_intent
     t = tmp_path / "s.jsonl"
-    _write_transcript(t, [("user", "hi")])  # len < COMPACT_MIN_QUERY_LEN
+    # len 7 < 8, 그리고 noise 아님 — 길이 게이트만 걸려야 함
+    _write_raw(t, [{"type": "user", "message": {"content": "fix bug"}}])
+    monkeypatch.setattr(query_intent, "should_skip_recall", lambda obj: False)  # intent 중화
+    ran = {}
+    monkeypatch.setattr(memory_search, "recall_memory",
+                        lambda *a, **k: (ran.update(hit=True), [])[1])
     rc = sm.handle_compact_reinjection({"transcript_path": str(t)})
     assert rc == 0
+    assert ran.get("hit") is None  # 길이 게이트가 recall 전에 차단
     assert capsys.readouterr().out == ""
 
 
@@ -410,3 +421,40 @@ def test_compact_intent_classifies_latest_turn_only(tmp_path, monkeypatch):
     sm.handle_compact_reinjection({"transcript_path": str(t)})
     assert "최신진짜의도LATEST" in seen.get("arg", "")
     assert "안녕 인사말" not in seen.get("arg", "")  # join-blob 이면 둘 다 포함 → 실패
+
+
+# --- round-4 fix: SIGALRM 핸들러 누수 방지 (장수 인터프리터 flaky 차단) ----------
+
+def test_compact_reinjection_restores_sigalrm_handler(tmp_path, monkeypatch):
+    """호출 후 이전 SIGALRM 핸들러로 복원돼야 함. 안 하면 _compact_alarm 이 남아
+    이후 stray alarm 이 _CompactTimeout(BaseException)을 던져 무관 코드/테스트가 flaky."""
+    import signal as _sig
+    import session_memory as sm
+    import memory_search
+    t = tmp_path / "s.jsonl"
+    _write_raw(t, [{"type": "user", "message": {"content": "충분히 긴 회수 질의 텍스트 압축 분석"}}])
+    monkeypatch.setattr(memory_search, "recall_memory",
+                        lambda *a, **k: [{"name": "x", "source": ["vec"], "description": "d", "snippet": "", "score": 0.9}])
+    before = _sig.getsignal(_sig.SIGALRM)
+    sm.handle_compact_reinjection({"transcript_path": str(t)})
+    after = _sig.getsignal(_sig.SIGALRM)
+    assert after == before  # 복원됨 (누수 시 after == _compact_alarm != before)
+    assert after is not sm._compact_alarm
+
+
+def test_compact_reinjection_records_metric(tmp_path, monkeypatch):
+    """compact 종결점이 metrics.jsonl 에 1줄 기록 (Layer 4 대칭)."""
+    import json as _json
+    import session_memory as sm
+    import memory_search
+    mlog = tmp_path / "metrics.jsonl"
+    monkeypatch.setattr(sm, "_METRICS_LOG", mlog)
+    t = tmp_path / "s.jsonl"
+    _write_raw(t, [{"type": "user", "message": {"content": "MindVault 회수 게이트 구조 분석 요청"}}])
+    monkeypatch.setattr(memory_search, "recall_memory",
+                        lambda *a, **k: [{"name": "x", "source": ["vec"], "description": "d", "snippet": "", "score": 0.9}])
+    sm.handle_compact_reinjection({"transcript_path": str(t)})
+    assert mlog.exists()
+    recs = [_json.loads(l) for l in mlog.read_text().splitlines() if l.strip()]
+    assert any(r.get("kind") == "compact_reinject" and r.get("outcome") == "injected" and r.get("picked") == 1
+               for r in recs)

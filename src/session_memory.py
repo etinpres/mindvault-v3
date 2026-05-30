@@ -497,6 +497,27 @@ def _compact_alarm(_signum, _frame):
     raise _CompactTimeout()
 
 
+# Layer 4(memory-recall._metric) 대칭 — compact 재주입 종결점마다 1줄 계측해 발동률·
+# 스킵사유 분포·latency 를 metrics.jsonl 로 집계 가능하게(debug.log 는 집계 부적합).
+_METRICS_LOG = _MV3_DATA_DIR / "metrics.jsonl"
+
+
+def _compact_metric(outcome: str, t0: float, **extra) -> None:
+    """compact 재주입 outcome 1줄 기록. 실패는 silent (hook 블로킹 금지)."""
+    try:
+        rec = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "kind": "compact_reinject",
+            "outcome": outcome,
+            "elapsed_ms": int((time.time() - t0) * 1000),
+        }
+        rec.update(extra)
+        with _METRICS_LOG.open("a") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 # 압축 직후 transcript 에는 isCompactSummary 요약 메시지·스킬 본문 주입·command/
 # local-command 스캐폴딩이 type=="user" 로 섞인다. 이들이 query 를 지배하면 "사용자
 # 의도"가 아닌 boilerplate 로 회수가 빗나간다(recall-on-recalled). genuine 발화만 남긴다.
@@ -593,10 +614,12 @@ def handle_compact_reinjection(hook_data: dict) -> int:
     실패·빈 query·빈 결과는 모두 silent (추가 컨텍스트 없이 exit 0). numpy 없는
     interpreter 면 memory_search import 가 실패해 graceful skip 된다.
     """
+    t0 = time.time()
     try:
         transcript = _resolve_transcript(hook_data)
         if transcript is None:
             _debug("compact: transcript 미해결 → skip")
+            _compact_metric("no_transcript", t0)
             return 0
 
         # 배포본(scripts/mindvault) + repo(src) 둘 다 import 경로에 추가.
@@ -619,16 +642,21 @@ def handle_compact_reinjection(hook_data: dict) -> int:
         # hard time budget — transcript O(N) parse + cold/hung Arctic embed(5s) 전체를
         # cover 해 compaction 재개를 블로킹 못하게. SIGALRM 은 메인스레드 전용이며 hook
         # 은 메인스레드 실행(확인됨); 비-main 이면 ValueError → except Exception graceful.
-        signal.signal(signal.SIGALRM, _compact_alarm)
+        # 이전 핸들러를 저장→finally 에서 복원: 안 하면 _compact_alarm 이 프로세스에 남아
+        # 이후 stray SIGALRM 이 무관한 코드에서 _CompactTimeout(BaseException)을 던진다
+        # (단발 hook 프로세스는 무해하나 장수 인터프리터=pytest 에서 flaky).
+        _prev_sigalrm = signal.signal(signal.SIGALRM, _compact_alarm)
         try:
             signal.setitimer(signal.ITIMER_REAL, COMPACT_BUDGET_S)
             capped = _recent_genuine_turns(transcript, COMPACT_RECENT_USER_TURNS)
             if not capped:
                 _debug("compact: genuine user 발화 없음 → skip")
+                _compact_metric("no_turns", t0)
                 return 0
             query = "\n".join(capped).strip()[-COMPACT_QUERY_MAX_CHARS:]
             if len(query) < COMPACT_MIN_QUERY_LEN:
                 _debug(f"compact: query too short ({len(query)}) → skip")
+                _compact_metric("short_query", t0, query_len=len(query))
                 return 0
 
             # chat/meta 의도면 스킵 (Layer 4 와 일관 — 토큰낭비 방어). join-blob 이
@@ -638,6 +666,7 @@ def handle_compact_reinjection(hook_data: dict) -> int:
                 try:
                     if _qi_skip(_qi_classify(capped[-1])):
                         _debug("compact: intent chat/meta (latest turn) → skip")
+                        _compact_metric("intent_skip", t0, query_len=len(query))
                         return 0
                 except Exception:
                     pass
@@ -655,20 +684,33 @@ def handle_compact_reinjection(hook_data: dict) -> int:
             )
             if not results:
                 _debug("compact: recall picked 0 → skip")
+                _compact_metric("no_results", t0, query_len=len(query))
                 return 0
             block = recall_core.format_memory_context(
                 results, intro=COMPACT_INTRO, wrap_system_reminder=True
             )
             emit_compact_context(f"{COMPACT_SIGNATURE}\n\n{block}")
             _debug(f"compact: re-injected {len(results)} mem (query_len={len(query)})")
+            _compact_metric("injected", t0, query_len=len(query), picked=len(results))
             return 0
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
+            # 이전 SIGALRM 핸들러 복원 (누수 차단). _prev 가 None(비-Python 설치)이면
+            # SIG_DFL. signal 호출 실패해도 hook 은 절대 안 깨지게 try/except.
+            try:
+                signal.signal(
+                    signal.SIGALRM,
+                    _prev_sigalrm if _prev_sigalrm is not None else signal.SIG_DFL,
+                )
+            except (TypeError, ValueError, OSError):
+                pass
     except _CompactTimeout:
         _debug(f"compact: budget {COMPACT_BUDGET_S}s exceeded → skip")
+        _compact_metric("budget_timeout", t0)
         return 0
     except Exception as e:
         _debug(f"compact reinjection FATAL {type(e).__name__}: {e}")
+        _compact_metric("error", t0, error=type(e).__name__)
         return 0
 
 
