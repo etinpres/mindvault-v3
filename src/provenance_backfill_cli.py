@@ -10,6 +10,7 @@ session id 우선순위:
 from __future__ import annotations
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -42,9 +43,7 @@ def backfill_file(path: Path, dry_run: bool) -> bool:
 
     Returns True if the file would be (dry_run) or was injected.
     Returns False if skipped (unreadable, no frontmatter, already has source_type,
-    or closing fence not locatable).
-    May propagate ValueError only if frontmatter close-fence is completely absent
-    (caller is expected to catch it per-file).
+    or closing fence not locatable — tolerant, never raises ValueError).
     """
     try:
         text = path.read_text(encoding="utf-8")
@@ -63,6 +62,10 @@ def backfill_file(path: Path, dry_run: bool) -> bool:
 
     ref = _find_session_ref(fm)
     if ref:
+        # Round-2 fix (Item 2): collapse multi-line YAML block-scalar values so
+        # the injected source_ref: line stays on a single line and
+        # re-parses cleanly with the line-based frontmatter parser.
+        ref = re.sub(r"\s+", " ", str(ref)).strip()
         st = "session"
     else:
         st, ref = "unknown", ""
@@ -87,8 +90,11 @@ def backfill_file(path: Path, dry_run: bool) -> bool:
 
 
 def _collect_files(d: Path) -> List[Path]:
-    """Mirror memory_indexer._collect_md_files: root/*.md + _procedural/*.md,
-    skip MEMORY.md, skip any path that has a '_staged' part."""
+    """Collect eligible memory files: root/*.md + _procedural/*.md,
+    skip MEMORY.md, skip any path that has a '_staged' part.
+    Note: symlinks are followed (no symlink-outside guard — out of scope for this
+    personal-memory CLI; unlike memory_indexer._collect_md_files which applies a
+    _safe_memory_path containment check)."""
     files: List[Path] = []
     for p in d.glob("*.md"):
         if p.name == "MEMORY.md":
@@ -132,10 +138,11 @@ def backfill_dir(
                 # backfill_file returned False → skipped (unreadable / no fm / already set / no fence)
                 if skipped is not None:
                     skipped.append(p.name)
-        except Exception:
+        except Exception as e:
             # Problem B fix: per-file resilience — one bad file cannot abort the batch
+            # Round-2 fix (Item 3): include exception type for operability reporting.
             if failed is not None:
-                failed.append(p.name)
+                failed.append(f"{p.name} ({type(e).__name__})")
     return n
 
 

@@ -362,3 +362,181 @@ def test_approve_update_provenance_fallback_to_staged(tmp_path, monkeypatch, cap
     assert "captured_at:" in content, (
         f"captured_at missing (from staged_at fallback): {content}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Item 1 TDD: atomic donor selection — incoherent pair bug
+# ---------------------------------------------------------------------------
+
+def test_approve_update_unknown_existing_adopts_staged(tmp_path, monkeypatch, capsys):
+    """UPDATE path: existing has source_type 'unknown' (no source_ref) + staged has
+    real session provenance → promoted file must use the staged donor atomically
+    (source_type: session AND source_ref: REAL, not an incoherent mix).
+
+    FAIL before the round-2 donor fix (existing "unknown" wins source_type but
+    staged ref wins source_ref → incoherent).
+    PASS after the fix (existing "unknown" → adopt staged as single donor).
+    """
+    mem = tmp_path / "memory"
+    (mem / "_staged").mkdir(parents=True)
+    monkeypatch.setenv("MV3_EXTRA_MEMORY_DIRS", str(mem))
+
+    cli = _load_cli(monkeypatch, mem, tmp_path / "data")
+
+    # Existing permanent memory backfilled as 'unknown' with NO source_ref
+    target = mem / "unknown_prov.md"
+    target.write_text(
+        "---\n"
+        "name: Unknown Prov\n"
+        "description: backfilled as unknown\n"
+        "type: feedback\n"
+        "source_type: unknown\n"
+        "---\n\n"
+        "old body\n",
+        encoding="utf-8",
+    )
+
+    real_session_ref = "deadbeef-cafe-1234-abcd-000011112222"
+
+    # Staged update with a REAL session provenance
+    staged = mem / "_staged" / "20260401-000000_feedback_unknown_prov.md"
+    staged.write_text(
+        "---\n"
+        "name: Unknown Prov\n"
+        "type: feedback\n"
+        f"update_of: {target}\n"
+        "source_type: session\n"
+        f"source_ref: {real_session_ref}\n"
+        "staged_at: 2026-04-01T10:00:00\n"
+        "---\n\n"
+        "refined body\n",
+        encoding="utf-8",
+    )
+
+    rc = cli.cmd_approve(staged.name)
+    assert rc == 0
+    res = _capture_json(capsys)
+    assert res.get("ok") is True, res
+    assert res.get("kind") == "update", res
+
+    content = target.read_text(encoding="utf-8")
+    assert "refined body" in content, "update body not applied"
+
+    # The incoherent pair before fix: source_type=unknown BUT source_ref=real_session_ref
+    # After fix: both come from the staged donor → source_type=session, source_ref=real
+    assert "source_type: session" in content, (
+        f"source_type should be 'session' (staged donor), got:\n{content}"
+    )
+    assert f"source_ref: {real_session_ref}" in content, (
+        f"source_ref should be the real session ref from staged donor:\n{content}"
+    )
+    # Specifically, 'unknown' must NOT appear as the source_type
+    # (parse the frontmatter to check, not just substring)
+    prov_meta, _ = cli.parse_frontmatter(content)
+    assert prov_meta.get("source_type") != "unknown", (
+        f"source_type is still 'unknown' — incoherent pair bug not fixed:\n{content}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Item 6: true full-chain gate-1 e2e
+# write_staged → cmd_approve (NEW-promote) → incremental_index → recall_memory
+# → _format_output — provenance must survive the entire chain
+# ---------------------------------------------------------------------------
+
+def _load_hook_for_e2e():
+    """Load hooks/memory-recall.py for _format_output."""
+    import importlib.util as ilu
+    hook_path = REPO / "hooks" / "memory-recall.py"
+    spec = ilu.spec_from_file_location("hk_e2e_chain", hook_path)
+    mod = ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_e2e_write_staged_through_approve_to_label(tmp_path, monkeypatch, capsys):
+    """Full gate-1 chain: write_staged → cmd_approve (NEW-promote) →
+    incremental_index → recall_memory → _format_output.
+
+    Asserts: final formatted output contains '출처:' AND 'session' AND
+    source_ref[:8] — proving provenance survives write → promote → index →
+    recall → format end-to-end.
+    """
+    from unittest.mock import patch
+    from memory_indexer import incremental_index
+    from memory_search import recall_memory
+
+    mem = tmp_path / "memory"
+    (mem / "_staged").mkdir(parents=True)
+
+    session_ref = "e2ecafe-beef-1234-5678-aabbccddeeff"
+
+    # Step 1: write_staged produces a staged file with provenance
+    sme = _load_sme(monkeypatch, mem, tmp_path / "data")
+    staged_path = sme.write_staged(
+        {
+            "title": "e2e chain test note",
+            "type": "feedback",
+            "reason": "full chain test",
+            "evidence": "write→approve→index→recall→format",
+            "body": "e2e 전체체인 프로비넌스 검증 본문",
+        },
+        session_id=session_ref,
+        source_type="session",
+        source_ref=session_ref,
+    )
+    assert staged_path is not None, "write_staged returned None"
+    assert staged_path.is_file(), "staged file not created"
+
+    # Step 2: cmd_approve (NEW-promote path — no _allowed_update_roots gate)
+    cli = _load_cli(monkeypatch, mem, tmp_path / "data")
+    rc = cli.cmd_approve(staged_path.name)
+    assert rc == 0
+    res = _capture_json(capsys)
+    assert res.get("ok") is True, f"approve failed: {res}"
+    assert res.get("kind") != "update", "should be new-promote, not update"
+
+    slug = cli._promoted_slug(staged_path.name)
+    promoted = mem / f"{slug}.md"
+    assert promoted.is_file(), f"promoted file not found at {promoted}"
+
+    # Verify promoted frontmatter has provenance before indexing
+    prom_text = promoted.read_text(encoding="utf-8")
+    assert "source_type: session" in prom_text, f"source_type missing after promote:\n{prom_text}"
+    assert f"source_ref: {session_ref}" in prom_text, f"source_ref missing after promote:\n{prom_text}"
+
+    # Step 3: incremental_index with fake embeddings
+    def _fake_embed(_text):
+        return [0.5] * 1024
+
+    tmp_db = tmp_path / "e2e_chain.db"
+    with patch("memory_indexer.embed_text", side_effect=_fake_embed):
+        incremental_index([mem], db_path=tmp_db)
+
+    # Step 4: recall_memory (FTS-only mode)
+    with patch("memory_search.embed_text", return_value=None):
+        results = recall_memory(
+            "e2e 전체체인",
+            top_k=3,
+            score_threshold=0.0,
+            db_path=tmp_db,
+        )
+
+    assert results, "recall returned no results — FTS or fixture issue"
+    assert "provenance" in results[0], "recall_memory did not attach provenance"
+    assert results[0]["provenance"]["source_type"] == "session", (
+        f"provenance.source_type wrong: {results[0]['provenance']}"
+    )
+    assert results[0]["provenance"]["source_ref"] == session_ref, (
+        f"provenance.source_ref wrong: {results[0]['provenance']}"
+    )
+
+    # Step 5: _format_output renders the provenance label
+    hook = _load_hook_for_e2e()
+    out = hook._format_output(results)
+
+    assert "출처:" in out, f"'출처:' label missing from formatted output:\n{out}"
+    assert "session" in out, f"'session' not in formatted output:\n{out}"
+    assert session_ref[:8] in out, (
+        f"source_ref prefix '{session_ref[:8]}' not in formatted output:\n{out}"
+    )

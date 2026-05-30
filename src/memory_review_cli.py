@@ -425,22 +425,20 @@ def cmd_approve(filename: str) -> int:
                 }
                 # UPDATE path: prefer existing target's provenance (preserve
                 # memory's original origin); fall back to staged meta if absent.
-                # _provenance_passthrough reads staged_at then captured_at for
-                # the date field.  We normalise everything into captured_at so
-                # the function emits it correctly regardless of which key the
-                # existing file uses.
+                # Round-2 fix: choose provenance ATOMICALLY from ONE donor so
+                # source_type and source_ref are never mixed between donors
+                # (incoherent pair bug: existing "unknown" + staged real ref).
+                # Prefer existing only when it has a REAL (non-empty,
+                # non-"unknown") source_type; otherwise adopt staged.
+                _ex_st = (existing_meta.get("source_type") or "").strip()
+                _donor = existing_meta if _ex_st and _ex_st != "unknown" else meta
                 provenance_meta = {
-                    "source_type": existing_meta.get("source_type") or meta.get("source_type"),
-                    "source_ref": existing_meta.get("source_ref") or meta.get("source_ref"),
+                    "source_type": _donor.get("source_type"),
+                    "source_ref": _donor.get("source_ref"),
                     # staged_at left empty so _provenance_passthrough falls
                     # through to captured_at below.
                     "staged_at": "",
-                    "captured_at": (
-                        existing_meta.get("captured_at")
-                        or existing_meta.get("staged_at")
-                        or meta.get("staged_at")
-                        or meta.get("captured_at")
-                    ),
+                    "captured_at": _donor.get("captured_at") or _donor.get("staged_at"),
                 }
                 final_fm = (
                     "---\n"

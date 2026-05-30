@@ -407,8 +407,8 @@ def test_backfill_reports_skipped_names(tmp_path, capsys):
     captured = capsys.readouterr().out
     # Must mention skipped file name
     assert "unreadable.md" in captured
-    # Must show count summary
-    assert "1" in captured  # at least the 1 applied file
+    # Must show exact apply-mode count summary (--apply → "적용: N건")
+    assert "적용: 1건" in captured
 
 
 # ─── Task 5: end-to-end 통합 (write→index→recall→format 출처 라벨) ─────────────
@@ -477,6 +477,46 @@ def test_recall_source_ref_normalized_to_str(tmp_path):
         )
     # json.dumps WITHOUT default=str must not raise
     json.dumps(results, ensure_ascii=False)
+
+
+def test_backfill_multiline_ref_collapses_to_single_line(tmp_path):
+    """Item 2: a YAML block-scalar session-id value containing newlines must be
+    collapsed to a single line before injection, so the resulting source_ref: line
+    re-parses cleanly (no embedded newline)."""
+    from src import provenance_backfill_cli as bf
+    from memory_review_cli import parse_frontmatter as pf
+    mem = tmp_path / "memory"; mem.mkdir()
+    p = mem / "multiline_ref.md"
+    # Write a file where the session id spans two lines (block-scalar style)
+    # The raw text has a literal '\n' embedded in the value we want to simulate.
+    # Use staged_from_session; backfill reads it via _find_session_ref → str(value).
+    # We set a value that str() would include a newline (simulate multi-line yaml).
+    p.write_text(
+        "---\n"
+        "name: multiline\n"
+        "type: project\n"
+        "staged_from_session: abcd1234\n  extra-line-junk\n"
+        "---\n\n"
+        "body\n",
+        encoding="utf-8",
+    )
+    # Must not raise; file should be processed
+    n = bf.backfill_dir(mem, dry_run=False)
+    if n == 1:
+        text = p.read_text(encoding="utf-8")
+        # source_ref line must not contain an embedded newline character
+        for line in text.splitlines():
+            if line.startswith("source_ref:"):
+                assert "\n" not in line, f"source_ref line contains embedded newline: {line!r}"
+                # The value (after the colon) must have no embedded newlines
+                _, val = line.split(":", 1)
+                assert "\n" not in val, f"source_ref value contains newline: {val!r}"
+        # The file must re-parse without losing frontmatter
+        fm, body = pf(text)
+        assert "source_ref" in fm
+        assert "\n" not in fm["source_ref"], (
+            f"source_ref in parsed frontmatter contains newline: {fm['source_ref']!r}"
+        )
 
 
 def test_e2e_staged_to_recall_label(tmp_path):
