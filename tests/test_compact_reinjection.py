@@ -202,3 +202,168 @@ def test_main_startup_does_not_route_compact(monkeypatch):
     rc = sm.main()
     assert rc == 0
     assert "hit" not in flag
+
+
+# === round-1 audit fixes 회귀 가드 ==========================================
+import pytest
+
+
+def _write_raw(path, entries):
+    """임의 JSONL 엔트리(최상위 isCompactSummary 등) 작성용."""
+    with path.open("w", encoding="utf-8") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+
+
+# --- F2: query 오염 차단 (isCompactSummary / skill body / local-command) -----
+
+def test_extract_query_skips_iscompactsummary(tmp_path):
+    import session_memory as sm
+    t = tmp_path / "s.jsonl"
+    _write_raw(t, [
+        {"type": "user", "message": {"content": "진짜 사용자 질문 처음"}},
+        {"type": "user", "isCompactSummary": True,
+         "message": {"content": "This session is being continued. Summary: " + "x" * 5000}},
+        {"type": "user", "message": {"content": "압축 후 진짜 사용자 질문입니다"}},
+    ])
+    q = sm.extract_compact_query(t)
+    assert "압축 후 진짜 사용자 질문입니다" in q
+    assert "This session is being continued" not in q
+    assert "Summary:" not in q
+
+
+def test_extract_query_skips_local_command_and_skill_blocks(tmp_path):
+    import session_memory as sm
+    t = tmp_path / "s.jsonl"
+    _write_raw(t, [
+        {"type": "user", "message": {"content": "<local-command-caveat>\nCaveat: ...\n</local-command-caveat>"}},
+        {"type": "user", "message": {"content": "<local-command-stdout>설정됨</local-command-stdout>"}},
+        {"type": "user", "message": {"content": "Base directory for this skill: /x/y\n# Writing Plans\n" + "p" * 6000}},
+        {"type": "user", "message": {"content": "이게 유일한 진짜 사용자 발화"}},
+    ])
+    q = sm.extract_compact_query(t)
+    assert q.strip() == "이게 유일한 진짜 사용자 발화"
+
+
+def test_realistic_post_compaction_transcript_yields_real_prompt(tmp_path):
+    """F3: 실제 post-/compact transcript 형태에서 query 가 진짜 prompt 여야 한다."""
+    import session_memory as sm
+    t = tmp_path / "s.jsonl"
+    _write_raw(t, [
+        {"type": "user", "message": {"content": "Base directory for this skill: /a/b\n# Writing Plans\n" + "s" * 6000}},
+        {"type": "user", "isCompactSummary": True,
+         "message": {"content": "This session is being continued...\nSummary:\n" + "z" * 12000}},
+        {"type": "user", "message": {"content": "<local-command-caveat>\nCaveat: msg\n</local-command-caveat>"}},
+        {"type": "user", "message": {"content": "<local-command-stdout>goal set</local-command-stdout>"}},
+        {"type": "user", "message": {"content": "compact hook 버그를 찾아서 고쳐줘"}},
+    ])
+    q = sm.extract_compact_query(t)
+    assert "compact hook 버그를 찾아서 고쳐줘" in q
+    assert "Writing Plans" not in q
+    assert "This session is being continued" not in q
+    assert "local-command" not in q
+
+
+# --- F4/F16: per-turn cap + tail-keep 으로 최신 발화 보존 ---------------------
+
+def test_extract_query_preserves_newest_turn_under_large_old_turns(tmp_path):
+    import session_memory as sm
+    t = tmp_path / "s.jsonl"
+    _write_raw(t, [
+        {"type": "user", "message": {"content": "오래된거 " + "A" * 5000}},
+        {"type": "user", "message": {"content": "두번째 " + "B" * 5000}},
+        {"type": "user", "message": {"content": "최신 진짜 의도 키워드 ZZZZ"}},
+    ])
+    q = sm.extract_compact_query(t)
+    assert "최신 진짜 의도 키워드 ZZZZ" in q  # 앞에서 잘렸으면 실패
+    assert len(q) <= sm.COMPACT_QUERY_MAX_CHARS
+
+
+# --- F8: deque(maxlen=N) 마지막 N genuine 만 보존 ----------------------------
+
+def test_extract_query_keeps_last_n_genuine(tmp_path):
+    import session_memory as sm
+    t = tmp_path / "s.jsonl"
+    _write_raw(t, [{"type": "user", "message": {"content": f"발화{i} 충분히김 텍스트"}} for i in range(20)])
+    q = sm.extract_compact_query(t, recent_user_turns=3)
+    assert "발화19" in q and "발화18" in q and "발화17" in q
+    assert "발화16" not in q
+
+
+# --- F11: stale transcript_path → sid 폴백 -----------------------------------
+
+def test_resolve_transcript_stale_path_falls_back_to_sid(tmp_path, monkeypatch):
+    import session_memory as sm
+    monkeypatch.setattr(sm, "PROJECTS_DIR", tmp_path)
+    sid_file = tmp_path / "thesid.jsonl"
+    sid_file.write_text("{}\n")
+    got = sm._resolve_transcript({
+        "transcript_path": str(tmp_path / "stale_missing.jsonl"),
+        "session_id": "thesid",
+    })
+    assert got == sid_file
+
+
+# --- F12: main() source 정규화 (대소문자/공백/없음) --------------------------
+
+@pytest.mark.parametrize("src", ["compact", "COMPACT", " compact ", "Compact"])
+def test_main_source_variants_route_compact(monkeypatch, src):
+    import session_memory as sm
+    monkeypatch.setattr(sm, "trigger_bge_m3_warmup", lambda: None)
+    monkeypatch.delenv("MV3_HOOK_RECURSION_GUARD", raising=False)
+    called = {}
+    monkeypatch.setattr(sm, "handle_compact_reinjection",
+                        lambda hd: (called.update(hit=True), 0)[1])
+    monkeypatch.setattr(sm, "call_gemma",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("summary on compact")))
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "s", "source": src})))
+    assert sm.main() == 0
+    assert called.get("hit") is True
+
+
+# --- F1: recall 시간예산 → _CompactTimeout silent skip -----------------------
+
+def test_compact_recall_time_budget_skips_on_slow(tmp_path, monkeypatch, capsys):
+    import time as _t
+    import session_memory as sm
+    import memory_search
+    monkeypatch.setattr(sm, "COMPACT_BUDGET_S", 0.3)
+    t = tmp_path / "s.jsonl"
+    _write_raw(t, [{"type": "user", "message": {"content": "충분히 긴 진짜 회수 질의입니다 압축"}}])
+
+    def _slow(*a, **k):
+        _t.sleep(2.0)  # budget(0.3s) 초과 → SIGALRM 이 interrupt
+        return [{"name": "x", "source": ["vec"], "description": "d", "snippet": "", "score": 0.9}]
+
+    monkeypatch.setattr(memory_search, "recall_memory", _slow)
+    rc = sm.handle_compact_reinjection({"transcript_path": str(t)})
+    assert rc == 0
+    assert capsys.readouterr().out == ""  # 시간초과 → 주입 없음
+
+
+# --- F9: chat/meta 의도면 recall 전 스킵 -------------------------------------
+
+def test_compact_honors_intent_skip(tmp_path, monkeypatch, capsys):
+    import session_memory as sm
+    import memory_search
+    import query_intent
+    t = tmp_path / "s.jsonl"
+    _write_raw(t, [{"type": "user", "message": {"content": "충분히 긴 어떤 질의 텍스트입니다"}}])
+    monkeypatch.setattr(query_intent, "should_skip_recall", lambda obj: True)
+    monkeypatch.setattr(memory_search, "recall_memory",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("recall ran despite intent skip")))
+    rc = sm.handle_compact_reinjection({"transcript_path": str(t)})
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+# --- F5: format_memory_context source 스칼라 가드 (recall_core) --------------
+
+def test_format_memory_context_scalar_source_not_char_split():
+    import recall_core
+    out = recall_core.format_memory_context(
+        [{"name": "m", "source": "vec", "description": "d", "snippet": "", "score": 0.6}],
+        wrap_system_reminder=False,
+    )
+    assert "v+e+c" not in out  # 스칼라가 글자단위 분해되면 안 됨
+    assert "vec" in out

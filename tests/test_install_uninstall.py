@@ -611,5 +611,32 @@ class TestV34ContradictionDeploy(unittest.TestCase):
         self.assertTrue((self.repo / "src" / "contradiction_review_cli.py").exists())
 
 
+class TestCompactReinjectionDeploy(unittest.TestCase):
+    """compact 재주입(SessionStart source=compact) 회귀 가드 — install.sh 가
+    recall_core.py 를 deploy 하는지.
+
+    session_memory.py 의 handle_compact_reinjection 이 runtime 에 `import recall_core`
+    한다. install.sh RUNTIME_EXTRA_SRC 에서 빠지면 compact 경로가 silent
+    ImportError(broad except 안에서 묻힘) → compact 재주입 무동작.
+    (TestV34ContradictionDeploy 와 동일 failure class.)
+    """
+
+    def setUp(self):
+        self.repo = Path(__file__).resolve().parent.parent
+
+    def test_install_sh_deploys_recall_core(self):
+        content = (self.repo / "install.sh").read_text(encoding="utf-8")
+        has_recall_core = (
+            "recall_core.py" in content
+            or "src/*.py" in content
+            or "cp -r src" in content
+            or "cp src/" in content
+        )
+        self.assertTrue(has_recall_core, "install.sh must deploy recall_core.py (compact 경로 의존)")
+
+    def test_recall_core_source_file_exists(self):
+        self.assertTrue((self.repo / "src" / "recall_core.py").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

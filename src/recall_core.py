@@ -74,7 +74,11 @@ def format_memory_context(
         return ""
     body = [intro, ""]
     for r in results:
-        srcs = sanitize("+".join(r.get("source") or []))
+        # source 는 항상 list(recall_memory)지만, 스칼라 'vec' 가 오면 "+".join 이
+        # 'v+e+c' 로 글자단위 분해된다. isinstance 가드(or [] 만으론 truthy 비-list 못 막음).
+        src_val = r.get("source")
+        src_list = src_val if isinstance(src_val, list) else ([] if not src_val else [str(src_val)])
+        srcs = sanitize("+".join(src_list))
         # name 안 ']' 가 들어가면 회수노트 추출 regex 가 첫 ']' 에서 끊김 → ')' escape
         raw_name = r.get("name") or "(unnamed)"
         name = sanitize(raw_name.replace("]", ")"))

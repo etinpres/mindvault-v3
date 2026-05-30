@@ -11,10 +11,12 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
 import traceback
+from collections import deque
 from pathlib import Path
 
 # compact 재주입 경로(source=compact)는 memory_search → numpy/sqlite_vec 가 필요.
@@ -477,6 +479,39 @@ COMPACT_INTRO = (
 COMPACT_RECENT_USER_TURNS = 4
 COMPACT_QUERY_MAX_CHARS = 1200
 COMPACT_MIN_QUERY_LEN = 8
+# cold/hung Arctic-ko embed(EMBED_TIMEOUT=5s)가 compaction 재개를 통째로 블로킹
+# 하지 못하도록 compact recall 에 hard 상한. compact 는 250ms 제약은 없으나 무가드도
+# 안 됨 (Layer 4 의 400ms SIGALRM 비대칭 해소).
+COMPACT_BUDGET_S = 2.0
+
+
+class _CompactTimeout(BaseException):
+    """compact 경로 hard-budget sentinel.
+
+    BaseException 상속이라 recall_memory 내부의 broad ``except Exception`` 에 swallow
+    되지 않고 handle_compact_reinjection 의 ``except _CompactTimeout`` 으로만 처리된다
+    (Layer 4 memory-recall._Timeout 과 동일 패턴)."""
+
+
+def _compact_alarm(_signum, _frame):
+    raise _CompactTimeout()
+
+
+# 압축 직후 transcript 에는 isCompactSummary 요약 메시지·스킬 본문 주입·command/
+# local-command 스캐폴딩이 type=="user" 로 섞인다. 이들이 query 를 지배하면 "사용자
+# 의도"가 아닌 boilerplate 로 회수가 빗나간다(recall-on-recalled). genuine 발화만 남긴다.
+# (<system-reminder>/<command- 는 extract_text_from_content 가 이미 ""로 만들지만 방어적 포함.)
+_COMPACT_NOISE_PREFIXES = (
+    "<system-reminder>",
+    "<command-",
+    "<local-command-",
+    "Base directory for this skill:",
+)
+
+
+def _is_compact_noise(text: str) -> bool:
+    head = text.lstrip()[:80]
+    return any(head.startswith(p) for p in _COMPACT_NOISE_PREFIXES)
 
 
 def _resolve_transcript(hook_data: dict) -> Path | None:
@@ -497,9 +532,16 @@ def _resolve_transcript(hook_data: dict) -> Path | None:
 
 def extract_compact_query(transcript: Path,
                           recent_user_turns: int = COMPACT_RECENT_USER_TURNS) -> str:
-    """현재 세션 transcript 에서 최근 user 발화 N개를 합쳐 회수 query 로 만든다.
-    시스템 리마인더·지난세션 요약 블록은 extract_text_from_content 가 스킵한다."""
-    users: list[str] = []
+    """현재 세션 transcript 에서 *genuine* user 발화 N개를 합쳐 회수 query 로 만든다.
+
+    압축 직후 transcript 오염원을 제거한다 — (1) 최상위 isCompactSummary=True 요약
+    메시지(대화로부터 생성된 거라 query 로 쓰면 recall-on-recalled), (2) 시스템
+    리마인더, (3) 스킬 본문·command/local-command 스캐폴딩, (4) 우리 자신의 SIGNATURE/
+    COMPACT_SIGNATURE 블록. deque(maxlen=N) 로 마지막 N개 genuine 발화만 보존해 redact
+    호출을 N→k 로 줄이고, 각 발화를 per-turn 캡(MAX_MSG_CHARS)한 뒤 join → 가장 최근
+    발화가 길이 truncation 으로 사라지지 않게 tail-keep 한다.
+    """
+    recent: deque = deque(maxlen=max(1, recent_user_turns))
     try:
         with transcript.open() as f:
             for line in f:
@@ -509,18 +551,25 @@ def extract_compact_query(transcript: Path,
                     continue
                 if d.get("type") != "user":
                     continue
+                # 압축 요약 메시지(최상위 isCompactSummary)는 대화로부터 파생 → 스킵
+                if d.get("isCompactSummary"):
+                    continue
                 msg = d.get("message") or {}
                 text = extract_text_from_content(msg.get("content")).strip()
                 if not text or SIGNATURE in text or COMPACT_SIGNATURE in text:
                     continue
-                users.append(redact(text))
+                if _is_compact_noise(text):
+                    continue
+                recent.append(text)  # raw 보존 — redact 는 최종 선택분에만
     except OSError as e:
         _debug(f"compact transcript read failed: {e}")
         return ""
-    if not users:
+    if not recent:
         return ""
-    query = "\n".join(users[-recent_user_turns:]).strip()
-    return query[:COMPACT_QUERY_MAX_CHARS]
+    # per-turn 캡 후 join, tail-keep 으로 최신 발화 보존 (앞에서 자르면 최신이 날아감)
+    capped = [redact(t)[:MAX_MSG_CHARS] for t in recent]
+    query = "\n".join(capped).strip()
+    return query[-COMPACT_QUERY_MAX_CHARS:]
 
 
 def emit_compact_context(text: str) -> None:
@@ -559,6 +608,17 @@ def handle_compact_reinjection(hook_data: dict) -> int:
             if d.is_dir() and str(d) not in sys.path:
                 sys.path.insert(0, str(d))
         import recall_core
+
+        # chat/meta 의도면 회수 스킵 (Layer 4 와 일관 — 토큰낭비 방어). rule-based
+        # classify 만 사용(빠름). import 실패해도 graceful (스킵 안 함).
+        try:
+            from query_intent import classify, should_skip_recall
+            if should_skip_recall(classify(query)):
+                _debug("compact: intent chat/meta → skip")
+                return 0
+        except Exception:
+            pass
+
         from memory_search import recall_memory
 
         raw_min = (
@@ -566,12 +626,19 @@ def handle_compact_reinjection(hook_data: dict) -> int:
             if recall_core.has_recall_hint(query)
             else recall_core.RAW_COSINE_MIN_DEFAULT
         )
-        results = recall_memory(
-            query,
-            top_k=recall_core.COMPACT_TOP_K,
-            score_threshold=recall_core.SCORE_THRESHOLD,
-            raw_cosine_min=raw_min,
-        )
+        # hard time budget — cold/hung Arctic embed(5s)가 compaction 재개를 블로킹
+        # 못하게. SIGALRM 은 메인스레드 전용이며 hook 은 메인스레드 실행(확인됨).
+        signal.signal(signal.SIGALRM, _compact_alarm)
+        signal.setitimer(signal.ITIMER_REAL, COMPACT_BUDGET_S)
+        try:
+            results = recall_memory(
+                query,
+                top_k=recall_core.COMPACT_TOP_K,
+                score_threshold=recall_core.SCORE_THRESHOLD,
+                raw_cosine_min=raw_min,
+            )
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
         if not results:
             _debug("compact: recall picked 0 → skip")
             return 0
@@ -580,6 +647,10 @@ def handle_compact_reinjection(hook_data: dict) -> int:
         )
         emit_compact_context(f"{COMPACT_SIGNATURE}\n\n{block}")
         _debug(f"compact: re-injected {len(results)} mem (query_len={len(query)})")
+        return 0
+    except _CompactTimeout:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        _debug(f"compact: budget {COMPACT_BUDGET_S}s exceeded → skip")
         return 0
     except Exception as e:
         _debug(f"compact reinjection FATAL {type(e).__name__}: {e}")
