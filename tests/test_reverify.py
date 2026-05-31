@@ -304,3 +304,79 @@ def test_session_end_wires_reverify_best_effort():
     src = inspect.getsource(session_memory_end.main)
     assert "maybe_scan_due" in src           # reverify 트리거 배선
     assert "reverify skipped" in src         # silent-fail _debug 마커
+
+
+# ---- adversarial audit fixes ----
+def test_scan_no_oscillation(tmp_path, monkeypatch):
+    """CRITICAL: stale flag 후 재scan 해도 stale 유지 (reverify_note 의 'arctic' 이
+    self-poison 해 면제→strip→재flag 진동하면 안 됨)."""
+    root = _fake_root_for_scan(tmp_path)
+    mem = tmp_path / "mem"
+    mem.mkdir()
+    p = mem / "s.md"
+    p.write_text("---\nname: s\n---\n\nBGE-M3 임베딩 사용.\n", encoding="utf-8")
+    monkeypatch.setenv("MV3_DATA_DIR", str(tmp_path / "data"))
+    s1 = scan_memories(mem, root=root, checked="2026-05-31")
+    assert s1["flagged"] == 1
+    assert "reverify_status: stale" in p.read_text(encoding="utf-8")
+    # 2회차: 진동 없이 stale 유지, 재기록 없음(idempotent)
+    s2 = scan_memories(mem, root=root, checked="2026-06-09")
+    assert "reverify_status: stale" in p.read_text(encoding="utf-8")  # 여전히 stale
+    assert s2["cleared"] == 0                                          # strip 안 됨
+    # 3회차도 동일
+    scan_memories(mem, root=root, checked="2026-06-16")
+    assert "reverify_status: stale" in p.read_text(encoding="utf-8")
+
+
+def test_upsert_preserves_blank_line_separator():
+    """BUG1: '---\\n...\\n---\\n\\nBody' 의 본문 구분 빈 줄이 upsert 후에도 보존."""
+    text = "---\nname: x\n---\n\nBody content.\n"
+    out = upsert_reverify_frontmatter(text, "stale", "n", "2026-05-31")
+    assert "\n---\n\nBody content.\n" in out   # 빈 줄(구분자) 보존
+    # strip 후 원복 (reverify 키만 제거, 빈 줄 유지)
+    from reverify import _strip_reverify_frontmatter
+    back = _strip_reverify_frontmatter(out)
+    assert "\n---\n\nBody content.\n" in back
+
+
+def test_upsert_bom_file_not_corrupted(tmp_path):
+    """BUG3: BOM 접두 파일도 frontmatter 인식 → 이중 FM 생성/이름 소실 없음."""
+    import yaml
+    from reverify import _FM_RE
+    text = "﻿---\nname: bom\ntype: feedback\n---\n\nBody.\n"
+    out = upsert_reverify_frontmatter(text, "stale", "n", "2026-05-31")
+    # 단일 frontmatter 블록만 (이중 아님): '---' 펜스가 정확히 2개
+    assert out.count("\n---\n") <= 2 and out.split("---", 2)[1].count("name: bom") == 1
+    m = _FM_RE.match(out)
+    assert m is not None
+    d = yaml.safe_load(m.group(1))
+    assert d.get("name") == "bom" and d.get("reverify_status") == "stale"
+
+
+def test_write_back_skips_file_without_frontmatter(tmp_path):
+    """no-frontmatter 파일에 stale 플래그를 prepend 하지 않음 (안전 — 이중/오손상 방지)."""
+    p = tmp_path / "nofm.md"
+    orig = "그냥 본문, BGE-M3 언급.\n"   # frontmatter 없음
+    p.write_text(orig, encoding="utf-8")
+    from reverify import StaleVerdict as SV
+    wrote = write_back_verdict(p, SV(status="stale", note="n"), "2026-05-31")
+    assert wrote is False
+    assert p.read_text(encoding="utf-8") == orig   # 무손상
+
+
+def test_check_none_text_safe(tmp_path):
+    root = _fake_root(tmp_path)
+    assert check_memory_staleness(None, root).status == "fresh"
+    assert check_memory_staleness("", root).status == "fresh"
+
+
+def test_contains_empty_token_false():
+    from reverify import _contains_token
+    assert _contains_token("anything", "") is False
+
+
+def test_grep_present_flat_layout(tmp_path):
+    """배포 flat layout (memory_indexer.py 가 root 바로 아래) 도 verifier 통과."""
+    from reverify import _grep_present
+    (tmp_path / "memory_indexer.py").write_text("EMBED_URL=...8081...\n# Arctic\n", encoding="utf-8")
+    assert _grep_present(tmp_path, "src/memory_indexer.py", r"arctic") is True   # basename 폴백

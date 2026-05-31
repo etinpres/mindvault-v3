@@ -24,17 +24,21 @@ def default_root() -> Path:
     """현행 코드 ground truth root. MV3_REVERIFY_ROOT env 우선, 기본 = repo root."""
     env = os.environ.get("MV3_REVERIFY_ROOT", "").strip()
     if env:
-        return Path(env).expanduser()
+        return Path(env).expanduser().resolve()
     return Path(__file__).resolve().parent.parent  # src/reverify.py → repo root
 
 
 def _grep_present(root: Path, rel_path: str, pattern: str) -> bool:
-    """root/rel_path 에 pattern(정규식, 대소문자 무시)이 존재하면 True (없으면 False)."""
-    try:
-        text = (root / rel_path).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    return bool(re.search(pattern, text, re.IGNORECASE))
+    """root/rel_path (없으면 root/basename — flat 배포 layout) 에 pattern 존재하면 True."""
+    candidates = [root / rel_path, root / Path(rel_path).name]
+    for p in candidates:
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if re.search(pattern, text, re.IGNORECASE):
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -75,6 +79,8 @@ def _contains_token(text: str, token: str) -> bool:
     공백 포함 토큰 모두 동일 규칙. \\b 는 한국어를 \\w 로 봐 'arctic임' 인접을
     잘못 끊으므로 쓰지 않는다.
     """
+    if not token:
+        return False
     return re.search(
         rf"(?<![A-Za-z0-9]){re.escape(token.lower())}(?![A-Za-z0-9])", text.lower()
     ) is not None
@@ -98,6 +104,8 @@ def check_memory_staleness(
     """
     if root is None:
         root = default_root()
+    if not text:
+        return StaleVerdict(status="fresh")
     findings: List[str] = []
     for fact in facts:
         if not fact.verifier(root):
@@ -110,7 +118,7 @@ def check_memory_staleness(
                 f"{fact.key} 현재형 참조 {hit} (현행 {fact.current_value} 미언급)"
             )
     if findings:
-        return StaleVerdict(status="stale", note="; ".join(findings), findings=findings)
+        return StaleVerdict(status="stale", note="; ".join(findings)[:300], findings=findings)
     return StaleVerdict(status="fresh")
 
 
@@ -129,7 +137,9 @@ def verify_registry(root: Optional[Path] = None, facts: tuple = CANONICAL_FACTS)
     ]
 
 
-_FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
+# 선택적 BOM 허용(^﻿?); 닫는 펜스 뒤 가로공백만 소비([ \t]*\r?\n?) → 본문 구분
+# 빈 줄을 먹지 않음(audit BUG1). CRLF(\r?\n) 허용(audit BUG2).
+_FM_RE = re.compile(r"^﻿?---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n?", re.DOTALL)
 _REVERIFY_KEYS = ("reverify_status", "reverify_checked", "reverify_note")
 REVERIFY_INTERVAL_DAYS = 7
 
@@ -160,7 +170,7 @@ def upsert_reverify_frontmatter(text: str, status: str, note: str, checked: str)
         return "---\n" + "\n".join(new_lines) + "\n---\n\n" + text
     kept = [
         ln.rstrip("\r") for ln in m.group(1).split("\n")
-        if not any(ln.lstrip().startswith(k + ":") for k in _REVERIFY_KEYS)
+        if not any(ln.startswith(k + ":") for k in _REVERIFY_KEYS)
     ]
     merged = "\n".join(kept + new_lines)
     return "---\n" + merged + "\n---\n" + text[m.end():]
@@ -173,7 +183,7 @@ def _strip_reverify_frontmatter(text: str) -> str:
         return text
     kept = [
         ln.rstrip("\r") for ln in m.group(1).split("\n")
-        if not any(ln.lstrip().startswith(k + ":") for k in _REVERIFY_KEYS)
+        if not any(ln.startswith(k + ":") for k in _REVERIFY_KEYS)
     ]
     return "---\n" + "\n".join(kept) + "\n---\n" + text[m.end():]
 
@@ -221,6 +231,8 @@ def write_back_verdict(path: Path, verdict: StaleVerdict, checked: str) -> bool:
         return False
     cur_status = _current_reverify_status(text)
     if verdict.status == "stale":
+        if _FM_RE.match(text) is None:
+            return False  # frontmatter 없음/미인식 → 안전하게 skip (이중 FM 방지)
         if cur_status == "stale" and _current_reverify_note(text) == _oneline(verdict.note):
             return False  # idempotent
         return _atomic_write(
@@ -264,7 +276,7 @@ def scan_memories(
         except (OSError, UnicodeDecodeError):
             continue
         processed += 1
-        verdict = check_memory_staleness(text, root)
+        verdict = check_memory_staleness(_strip_reverify_frontmatter(text), root)
         had_flag = _current_reverify_status(text) is not None
         wrote = write_back_verdict(p, verdict, checked)
         if verdict.status == "stale" and wrote:
