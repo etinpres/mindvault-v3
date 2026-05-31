@@ -172,21 +172,23 @@ def test_formatter_intro_sanitized():
 
 def test_self_check_clause_present_and_parity():
     """②효과적 회수 — self-check 계약(옵션·권장·다음 단계 직전 cross-reference)이
-    양 포맷터 출력에 존재하고, 기존 "회수 노트:" 계약과 byte-parity 모두 유지."""
+    양 포맷터 출력에 존재하고, 기존 "회수 노트:" 계약과 byte-parity 모두 유지.
+    D3(설계 결정3) 확정 문구가 양 포맷터에 존재하고 D7(설계 규칙7) byte-parity 를 만족."""
     import recall_core
     mr = _load_memrecall()
     sample = [{"name": "m", "source": ["vec"], "description": "d",
                "snippet": "", "score": 0.6}]
     out_core = recall_core.format_memory_context(sample, wrap_system_reminder=True)
     out_mr = mr._format_output(sample)
-    # self-check 조항 핵심 토큰 (D3 확정 문구)
+    # self-check 조항 핵심 토큰 (D3(설계 결정3) 확정 문구)
     assert "옵션·권장·다음 단계" in out_core
     assert "위반 가능성" in out_core
     assert "feedback·project" in out_core
     # 기존 NEXT-37 계약 불변 (회귀 흉터 보호)
     assert "회수 노트:" in out_core
     assert "모순되면 즉시 표기" in out_core
-    # D7 byte-parity (한쪽만 바뀌면 실패)
+    assert "위반 가능성" in out_mr   # 명시 단언 — 동등성에만 의존 안 함 (양 포맷터 둘 다 확인)
+    # D7(설계 규칙7) byte-parity (한쪽만 바뀌면 실패)
     assert out_core == out_mr
 
 
