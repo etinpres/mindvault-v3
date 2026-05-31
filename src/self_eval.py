@@ -1059,6 +1059,52 @@ def recall_utilization(
     }
 
 
+# NEXT-38 Phase 1② — strict cited 목표 게이트 (spec §4.3②, 설계 D4/D5).
+# strict cited 는 substring-match lower bound 라 100% 불가(§4.4). 2× baseline
+# 7.62% → 0.15 목표. judged 표본 부족 시 noise 회피 위해 fail(insufficient).
+# 측정 로직 자체는 불변 — 게이트는 판정만 얹는다(자동 튜닝 안 함, D6).
+RECALL_UTILIZATION_TARGET = 0.15
+RECALL_UTILIZATION_MIN_JUDGED = 30
+
+
+def recall_utilization_gate(
+    util_result: dict,
+    target: float = RECALL_UTILIZATION_TARGET,
+    min_judged: int = RECALL_UTILIZATION_MIN_JUDGED,
+) -> dict:
+    """recall_utilization() 결과를 strict cited 목표 대비 pass/fail 판정.
+
+    judged = cited + marker_only + unused (no_response 제외 — recall_utilization
+    의 judged 정의와 동일). judged < min_judged 면 'insufficient_sample'
+    (pass=False) — 소표본 noise 로 게이트가 흔들리는 것을 차단.
+
+    반환: {pass, strict, target, judged, min_judged, reason}
+    """
+    by = util_result.get("by_status", {}) or {}
+    judged = (
+        by.get("cited", 0) + by.get("marker_only", 0) + by.get("unused", 0)
+    )
+    strict = util_result.get("utilization_rate_strict", 0.0)
+    if judged < min_judged:
+        return {
+            "pass": False,
+            "strict": strict,
+            "target": target,
+            "judged": judged,
+            "min_judged": min_judged,
+            "reason": f"insufficient_sample (judged={judged} < {min_judged})",
+        }
+    passed = strict >= target
+    return {
+        "pass": passed,
+        "strict": strict,
+        "target": target,
+        "judged": judged,
+        "min_judged": min_judged,
+        "reason": f"strict {strict:.4f} {'>=' if passed else '<'} target {target:.4f}",
+    }
+
+
 def _percentile(sorted_values: list[int], p: float) -> float:
     """단순 nearest-rank percentile. p ∈ [0, 100]. 빈 list 면 0."""
     if not sorted_values:
@@ -1196,6 +1242,13 @@ def main() -> int:
         help="NEXT-37 Phase 1B — recalled_ids 의 답변 cite 활용도 (cited / marker_only / unused / no_response)",
     )
     parser.add_argument(
+        "--target",
+        type=float,
+        default=RECALL_UTILIZATION_TARGET,
+        help="--recall-utilization strict cited 목표치 (default %(default)s, "
+             "Phase 1② 완료 게이트 — spec §4.3②)",
+    )
+    parser.add_argument(
         "--source",
         choices=["metrics", "transcripts"],
         default="metrics",
@@ -1249,6 +1302,7 @@ def main() -> int:
                 use_cache=args.use_cache,
                 events_source=args.source,
             )
+            out["gate"] = recall_utilization_gate(out, target=args.target)
             json.dump(out, sys.stdout, ensure_ascii=False, indent=2)
             return 0
         summary = analyze_recent(
