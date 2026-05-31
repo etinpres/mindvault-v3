@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 회수된 메모리가 답변 reasoning 에 거의 통합 안 되는 under-integration(strict cited 7.62% baseline)을 해소하기 위해, 회수 hook 출력 계약에 self-check 조항(옵션·권장·다음 단계 제시 시 회수된 feedback·project 메모리의 명시 룰과 cross-reference)을 추가하고, strict cited 목표(15%)를 checkable 게이트로 운영화한다.
+**Goal:** 회수된 메모리가 답변 reasoning 에 거의 통합 안 되는 under-integration(strict cited 7.62% baseline)을 해소하기 위해, 회수 hook 출력 계약에 self-check 조항(옵션·권장·다음 단계 제시 시 회수 메모리에 명시된 룰·제약과 cross-reference — audit R2E-1 후 content+이름 기반)을 추가하고, strict cited 목표(15%)를 checkable 게이트로 운영화한다.
 
 **Architecture:** 두 포맷터(`src/recall_core.py`의 `CONTRACT` ↔ `hooks/memory-recall.py`의 `_format_output` 인라인 문자열)에 self-check 조항을 byte-동일하게 추가한다(둘은 `tests/test_recall_core_parity.py`가 byte-parity 강제). 측정은 기존 `src/self_eval.py` `recall_utilization`(strict cited 측정 인프라)를 불변으로 두고, 그 결과 위에 `recall_utilization_gate()` 판정 함수 + `--target` CLI 플래그만 얹는다. 새 계약 문구가 `self_eval` ingestion(`extract_recalled_ids_from_hook_injection`)·sanitize·"회수 노트:" 회귀를 깨지 않음을 e2e 로 고정한다.
 
@@ -113,7 +113,7 @@ CONTRACT = (
     )
 ```
 
-> 두 문자열은 토큰화 후 byte-동일해야 한다 (`"feedback·project "` 뒤 trailing space + `"메모리의"`, `"X 위반 "` 뒤 trailing space + `"가능성"`). parity 테스트가 한쪽만 바뀌면 잡는다.
+> 두 문자열은 토큰화 후 byte-동일해야 한다 (continuation 경계의 trailing space 주의). parity 테스트가 한쪽만 바뀌면 잡는다. (※ 최초 구현 당시 경계는 `"feedback·project "`/`"X 위반 "` 였으나 audit R2E-1 정정으로 현재 코드 경계는 `"위 회수 메모리에 "` + `"명시된"`, `"<이름> 위반 "` + `"가능성"` — 최종 계약 문구는 design D3 참조.)
 
 - [ ] **Step 5: 테스트 통과 확인**
 
@@ -344,7 +344,7 @@ Expected: PASS (Task 1 구현이 이미 올바르면 즉시 통과 — 이 Task 
 - [ ] **Step 3: 전체 회귀 확인**
 
 Run: `python3 -m pytest -q`
-Expected: 기존 baseline(667 passed, 1 skipped, 25 subtests) + 신규(Task1 1건 + Task2 5건 + Task3 2건 = 8건) → **675 passed** 통과. (Task2 의 게이트 테스트는 4건 계획 + 코드리뷰 폴리시로 `test_strict_exactly_at_target_passes` 경계 테스트 1건 추가 = 5건.)
+Expected: 기존 baseline(667 passed, 1 skipped, 25 subtests) + 신규 = **675 passed** (구현 직후). (Task2 게이트는 4건 계획 + 리뷰 폴리시 경계 테스트 1건 = 5건 → Task1 1 + Task2 5 + Task3 2 = 8건.) ※ audit round-2 가 테스트 3건 추가(R2-D-1 compact 전파 / R2C-1 scope / R2A-1 --target 검증) → **현재 전체 678 passed**. (아래 "Audit 후속 정정" 참조.)
 
 > `test_e2e_4_hook_performance`(avg<150ms)는 동시부하 시 flake. FAIL 시 격리 재실행으로 확인:
 > `python3 -m pytest tests/test_e2e.py::...::test_e2e_4_hook_performance -v` (격리 통과 = 코드 회귀 아님)
@@ -393,12 +393,22 @@ python3 src/self_eval.py --recall-utilization --target 0.15 --source transcripts
 
 ---
 
-## Audit 후속 정정 (2026-05-31, round 2 다차원 adversarial 점검)
+## Audit 후속 정정 (2026-05-31, round 2~3 다차원 adversarial 점검)
 
-머지 후 6+5개 렌즈 × 2인 독립검증 워크플로로 전체를 재점검. 코드 correctness/parity/integration 결함 0건, 아래 4건 정정(설계 doc 단일 진실원천은 본 plan 위 Task 코드블록이 아니라 `docs/specs/2026-05-31-phase1-effective-recall-design.md` 의 D2/D3/§3 — audit 후 갱신됨):
+머지 후 6+5+5개 렌즈 × 2인 독립검증 워크플로 3라운드로 전체를 재점검. **코드 correctness/parity/integration 결함 0건**, 아래 정정.
+
+> **⚠️ 단일 진실원천**: 최종 계약 문구·게이트 사양은 `docs/specs/2026-05-31-phase1-effective-recall-design.md` 의 D2/D3/§3(audit 후 갱신)이다. **본 plan 의 Task 1~3 코드블록과 그 안팎 prose(Goal·Architecture·byte-parity 주석·테스트 코드 등)는 "최초 구현 당시" 기록이라 R2E-1 이전의 `feedback·project`/`"X"` 계약을 보여줄 수 있다 — 이는 모두 아래 R2E-1 정정으로 대체됐다.** plan 을 재실행 시 design D3 의 현행 계약을 사용할 것.
+
+### round 2 (4건 정정 + 1 not-a-bug)
 
 - **R2E-1 (important)** — 계약의 `feedback·project` type-scoping 이 회수 출력에 비가시(렌더 `[name]` 은 frontmatter title, 78% 가 type 글자 부재). 계약을 **content+이름 기반**으로 재서술: `위 회수 메모리에 명시된 룰·제약` + `"회수 메모리 <이름> 위반 가능성"`(round-1 "X" placeholder 모호성도 동시 해결). 양 포맷터 동시 수정, byte-parity 유지. (`src/recall_core.py`, `hooks/memory-recall.py`, `tests/test_recall_core_parity.py`)
 - **R2C-1 (minor, disclosure)** — 게이트 `strict` 는 Layer-4 hook 회수면만 측정(compact 재주입 제외 — 측정 인프라가 Phase1② 이전부터의 한계, D6 동결). 게이트 출력에 `scope` 키 추가로 과대인증 방지 + 설계 §3 한계 명시. (`src/self_eval.py`)
 - **R2A-1 (minor)** — `--target nan/inf` 가 비-스펙 JSON(NaN/Infinity bare token) 출력. argparse `_target_arg` 로 [0,1] 유한 실수만 통과. (`src/self_eval.py`, `tests/test_self_eval.py`)
 - **R2-D-1 (minor, test 갭)** — D7 의 "compact 재주입이 CONTRACT 자동 전파" 주장에 직접 테스트 없음 → `test_self_check_clause_propagates_to_compact_intro` 추가(실제 `COMPACT_INTRO` 로 렌더 검증). (`tests/test_recall_core_parity.py`)
 - **R2C-2 (not-a-bug)** — 게이트가 `utilization_rate_strict` 를 재계산 없이 신뢰하는 설계가 dict incoherent 시 판정 뒤집힐 수 있으나, 유일 producer 인 `recall_utilization` 이 항상 coherent 산출 → shipped 경로 unreachable. 수정 안 함.
+
+### round 3 (코드 결함 0건 — dry 수렴 확인. doc-sync 2건만)
+
+round-3 5렌즈(수정검증·신계약심층·잔여hunt·문서정합·completeness) × 2인 검증에서 **코드/parity/integration/CLI 신규 결함 0건**. R2E-1 reword 가 남긴 plan prose stale 2건만 정정:
+- **R3D-1 (minor, doc)** — plan Goal(line 5)·byte-parity 주석이 폐기된 `feedback·project`/`"X"` 계약을 현행처럼 서술 → content+이름 기반으로 정정 + 상단 disclaimer 범위를 prose 전체로 확대.
+- **R3D-2 (minor, doc)** — Task3 Step3 회귀 예상치 `675 passed` 가 round-2 추가 3건 미반영 → **678 passed** 로 갱신.
