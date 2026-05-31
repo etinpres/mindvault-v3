@@ -676,6 +676,7 @@ def recall_memory(
 
         for r in results:
             prov = {"source_type": "unknown", "source_ref": None, "captured_at": None}
+            reverify = {"status": None, "note": None}
             try:
                 fm, _ = parse_frontmatter(Path(r["path"]).read_text(encoding="utf-8"))
                 prov["source_type"] = fm.get("source_type") or "unknown"
@@ -683,9 +684,15 @@ def recall_memory(
                 prov["source_ref"] = _sr.isoformat() if hasattr(_sr, "isoformat") else (str(_sr) if _sr not in (None, "") else None)
                 _cap = fm.get("staged_at") or fm.get("captured_at")
                 prov["captured_at"] = _cap.isoformat() if hasattr(_cap, "isoformat") else (str(_cap) if _cap else None)
+                _rvs = fm.get("reverify_status")
+                if _rvs:
+                    reverify["status"] = str(_rvs)
+                    _note = fm.get("reverify_note")
+                    reverify["note"] = str(_note) if _note not in (None, "") else None
             except (OSError, UnicodeDecodeError, KeyError):
                 pass
             r["provenance"] = prov
+            r["reverify"] = reverify
         return results
     except Exception as e:
         # 의도적으로 `Exception` 만 잡는다 — hook 의 `_Timeout(BaseException)`

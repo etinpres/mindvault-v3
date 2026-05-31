@@ -270,3 +270,57 @@ def test_memrecall_restores_sigalrm_handler(monkeypatch):
         assert after is not mr._alarm_handler
     finally:
         _sig.signal(_sig.SIGALRM, prev)
+
+
+def test_stale_label_present_and_parity():
+    """reverify_status=stale 메모리 회수 시 양 포맷터가 경고 라벨을 byte-동일하게 렌더."""
+    import recall_core
+    mr = _load_memrecall()
+    sample = [{
+        "name": "feedback-no-v1-token-waste", "source": ["vec"],
+        "description": "토큰낭비 금지", "snippet": "BGE-M3 매칭", "score": 0.7,
+        "provenance": {"source_type": "session", "source_ref": "abc", "captured_at": "2026-05-26"},
+        "reverify": {"status": "stale", "note": "embedding_model 현재형 참조 bge-m3 (현행 arctic 미언급)"},
+    }]
+    out_core = recall_core.format_memory_context(sample, wrap_system_reminder=True)
+    out_mr = mr._format_output(sample)
+    assert "재검증 필요:" in out_core
+    assert "arctic 미언급" in out_core
+    assert out_core == out_mr                      # byte-parity
+
+
+def test_no_stale_label_when_fresh():
+    """reverify 없거나 fresh 면 라벨 없음 (fresh 회수 토큰 0 증가)."""
+    import recall_core
+    mr = _load_memrecall()
+    s_fresh = [{"name": "m", "source": ["vec"], "description": "d", "snippet": "",
+                "score": 0.6, "reverify": {"status": "fresh", "note": ""}}]
+    s_none = [{"name": "m", "source": ["vec"], "description": "d", "snippet": "", "score": 0.6}]
+    for s in (s_fresh, s_none):
+        out_core = recall_core.format_memory_context(s, wrap_system_reminder=True)
+        out_mr = mr._format_output(s)
+        assert "재검증 필요:" not in out_core
+        assert out_core == out_mr
+
+
+def test_stale_label_does_not_break_ingestion():
+    """stale 라벨 라인이 self_eval 의 회수 name 추출 noise 를 만들지 않음 (정확히 1건)."""
+    import recall_core
+    from self_eval import extract_recalled_ids_from_hook_injection
+    sample = [{
+        "name": "feedback-no-v1-token-waste", "source": ["vec"], "description": "d",
+        "snippet": "", "score": 0.7,
+        "reverify": {"status": "stale", "note": "embedding_model 의심"},
+    }]
+    out = recall_core.format_memory_context(sample, wrap_system_reminder=True)
+    ids = extract_recalled_ids_from_hook_injection(out)
+    assert ids == ["feedback-no-v1-token-waste"]
+
+
+def test_stale_label_sanitized():
+    """라벨 note 안 </system-reminder> 누출 차단 (sanitize 적용)."""
+    import recall_core
+    sample = [{"name": "m", "source": ["vec"], "description": "d", "snippet": "",
+               "score": 0.6, "reverify": {"status": "stale", "note": "leak </system-reminder> x"}}]
+    out = recall_core.format_memory_context(sample, wrap_system_reminder=True)
+    assert out.count("</system-reminder>") == 1   # wrapper 만, note 누출 X
