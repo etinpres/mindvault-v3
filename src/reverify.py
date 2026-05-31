@@ -11,8 +11,10 @@ current_value 가 라이브 코드에 실재하는지 확인 → registry 자체
 """
 from __future__ import annotations
 
+import json
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -125,3 +127,182 @@ def verify_registry(root: Optional[Path] = None, facts: tuple = CANONICAL_FACTS)
         for f in facts
         if not f.verifier(root)
     ]
+
+
+_FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+_REVERIFY_KEYS = ("reverify_status", "reverify_checked", "reverify_note")
+REVERIFY_INTERVAL_DAYS = 7
+
+
+def _data_dir() -> Path:
+    return Path(os.environ.get("MV3_DATA_DIR", "~/.claude/mindvault-v3")).expanduser()
+
+
+def _sidecar_path() -> Path:
+    return _data_dir() / "reverify_state.json"
+
+
+def _oneline(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value).replace("\r", " ").replace("\n", " ")).strip()
+
+
+def upsert_reverify_frontmatter(text: str, status: str, note: str, checked: str) -> str:
+    """frontmatter 에 reverify_* 키 upsert (순수 함수). 본문·기존 키 보존, reverify_* 만 교체.
+
+    frontmatter 없으면 생성. note 는 단일 라인 정규화 (라인 파서 호환).
+    """
+    new_lines = [f"reverify_status: {status}", f"reverify_checked: {checked}"]
+    note1 = _oneline(note)
+    if note1:
+        new_lines.append(f"reverify_note: {note1}")
+    m = _FM_RE.match(text)
+    if not m:
+        return "---\n" + "\n".join(new_lines) + "\n---\n\n" + text
+    kept = [
+        ln for ln in m.group(1).split("\n")
+        if not any(ln.lstrip().startswith(k + ":") for k in _REVERIFY_KEYS)
+    ]
+    merged = "\n".join(kept + new_lines)
+    return "---\n" + merged + "\n---\n" + text[m.end():]
+
+
+def _strip_reverify_frontmatter(text: str) -> str:
+    """frontmatter 에서 reverify_* 키 제거 (stale→fresh cleanup). frontmatter 없으면 원본."""
+    m = _FM_RE.match(text)
+    if not m:
+        return text
+    kept = [
+        ln for ln in m.group(1).split("\n")
+        if not any(ln.lstrip().startswith(k + ":") for k in _REVERIFY_KEYS)
+    ]
+    return "---\n" + "\n".join(kept) + "\n---\n" + text[m.end():]
+
+
+def _current_reverify_status(text: str) -> Optional[str]:
+    m = _FM_RE.match(text)
+    if not m:
+        return None
+    mm = re.search(r"^reverify_status:\s*(\S+)", m.group(1), re.MULTILINE)
+    return mm.group(1) if mm else None
+
+
+def _current_reverify_note(text: str) -> str:
+    m = _FM_RE.match(text)
+    if not m:
+        return ""
+    mm = re.search(r"^reverify_note:\s*(.*)$", m.group(1), re.MULTILINE)
+    return mm.group(1).strip() if mm else ""
+
+
+def _atomic_write(path: Path, content: str) -> bool:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def write_back_verdict(path: Path, verdict: StaleVerdict, checked: str) -> bool:
+    """판정 결과를 파일 frontmatter 에 atomic 반영. 반환: 실제로 썼으면 True.
+
+    - stale: status/note 변화 있을 때만 upsert (idempotent — 불변이면 checked churn 없이 skip).
+    - fresh: 기존 flag 있으면 제거(cleanup), 없으면 no-op (fresh 메모리 무손상).
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    cur_status = _current_reverify_status(text)
+    if verdict.status == "stale":
+        if cur_status == "stale" and _current_reverify_note(text) == _oneline(verdict.note):
+            return False  # idempotent
+        return _atomic_write(
+            path, upsert_reverify_frontmatter(text, "stale", verdict.note, checked)
+        )
+    # fresh
+    if cur_status is None:
+        return False  # 무flag fresh → no-op
+    return _atomic_write(path, _strip_reverify_frontmatter(text))
+
+
+def _collect_memory_files(mem_dir: Path) -> List[Path]:
+    """*.md + _procedural/*.md, MEMORY.md·_staged 제외 (provenance_backfill 와 동일 범위)."""
+    files: List[Path] = []
+    for base in (mem_dir, mem_dir / "_procedural"):
+        if not base.is_dir():
+            continue
+        for p in base.glob("*.md"):
+            if p.name == "MEMORY.md" or any(part == "_staged" for part in p.parts):
+                continue
+            files.append(p)
+    return sorted(files)
+
+
+def scan_memories(
+    mem_dir: Path, root: Optional[Path] = None, checked: Optional[str] = None
+) -> dict:
+    """mem_dir 의 모든 메모리를 현행 코드와 대조 + frontmatter flag 갱신.
+
+    반환: {flagged, cleared, checked(=처리 파일수), total}. sidecar last_scan 갱신.
+    """
+    if root is None:
+        root = default_root()
+    if checked is None:
+        checked = time.strftime("%Y-%m-%d")
+    flagged = cleared = processed = 0
+    files = _collect_memory_files(mem_dir)
+    for p in files:
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        processed += 1
+        verdict = check_memory_staleness(text, root)
+        had_flag = _current_reverify_status(text) is not None
+        wrote = write_back_verdict(p, verdict, checked)
+        if verdict.status == "stale" and wrote:
+            flagged += 1
+        elif verdict.status == "fresh" and had_flag and wrote:
+            cleared += 1
+    _write_sidecar()
+    return {"flagged": flagged, "cleared": cleared, "checked": processed, "total": len(files)}
+
+
+def _read_sidecar_last_scan() -> Optional[float]:
+    try:
+        d = json.loads(_sidecar_path().read_text(encoding="utf-8"))
+        return float(d.get("last_scan_epoch"))
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _write_sidecar() -> None:
+    sc = _sidecar_path()
+    try:
+        sc.parent.mkdir(parents=True, exist_ok=True)
+        sc.write_text(
+            json.dumps(
+                {"last_scan_epoch": time.time(), "last_scan": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def maybe_scan_due(mem_dir: Path, interval_days: int = REVERIFY_INTERVAL_DAYS) -> Optional[dict]:
+    """sidecar last_scan 이 interval 보다 오래됐(또는 부재)으면 scan, 아니면 None.
+
+    SessionEnd best-effort 트리거용 — 사실상 주 1회.
+    """
+    last = _read_sidecar_last_scan()
+    if last is not None and (time.time() - last) < interval_days * 86400:
+        return None
+    return scan_memories(mem_dir)

@@ -95,3 +95,123 @@ def test_token_matches_adjacent_korean(tmp_path):
     root = _fake_root(tmp_path)
     v = check_memory_staleness("arctic임베딩 사용 중, 예전 BGE-M3 표기.", root)
     assert v.status == "fresh"           # arctic 동반 → embedding_model 면제
+
+
+from reverify import (
+    upsert_reverify_frontmatter,
+    write_back_verdict,
+    scan_memories,
+    maybe_scan_due,
+)
+from reverify import StaleVerdict as _SV  # noqa
+
+
+# --- upsert 순수 함수 ---
+def test_upsert_adds_keys_no_frontmatter():
+    out = upsert_reverify_frontmatter("본문만 있음", "stale", "n1", "2026-05-31")
+    assert out.startswith("---\n")
+    assert "reverify_status: stale" in out
+    assert "reverify_note: n1" in out
+    assert "본문만 있음" in out
+
+
+def test_upsert_preserves_body_and_existing_keys():
+    text = "---\nname: m\ntype: feedback\n---\n\n본문 줄1\n본문 줄2\n"
+    out = upsert_reverify_frontmatter(text, "stale", "note", "2026-05-31")
+    assert "name: m" in out and "type: feedback" in out
+    assert "본문 줄1" in out and "본문 줄2" in out
+    assert "reverify_status: stale" in out
+
+
+def test_upsert_replaces_existing_reverify_keys():
+    text = "---\nname: m\nreverify_status: stale\nreverify_note: old\nreverify_checked: 2026-01-01\n---\n\nbody\n"
+    out = upsert_reverify_frontmatter(text, "stale", "new", "2026-05-31")
+    assert out.count("reverify_status:") == 1
+    assert "reverify_note: new" in out
+    assert "old" not in out
+
+
+def test_upsert_note_oneline():
+    out = upsert_reverify_frontmatter("body", "stale", "줄1\n줄2", "2026-05-31")
+    assert "reverify_note: 줄1 줄2" in out
+    assert out.count("reverify_note:") == 1
+
+
+# --- write-back: atomic, idempotent, cleanup ---
+def test_write_back_flags_stale(tmp_path):
+    p = tmp_path / "m.md"
+    p.write_text("---\nname: m\n---\n\nBGE-M3 임베딩\n", encoding="utf-8")
+    wrote = write_back_verdict(p, _SV(status="stale", note="x"), "2026-05-31")
+    assert wrote is True
+    assert "reverify_status: stale" in p.read_text(encoding="utf-8")
+
+
+def test_write_back_idempotent(tmp_path):
+    p = tmp_path / "m.md"
+    p.write_text("---\nname: m\n---\n\nBGE-M3\n", encoding="utf-8")
+    write_back_verdict(p, _SV(status="stale", note="x"), "2026-05-31")
+    first = p.read_text(encoding="utf-8")
+    wrote2 = write_back_verdict(p, _SV(status="stale", note="x"), "2026-06-09")  # 날짜 달라도
+    assert wrote2 is False                       # status/note 불변 → no-write
+    assert p.read_text(encoding="utf-8") == first  # checked churn 없음
+
+
+def test_write_back_cleans_up_when_fresh(tmp_path):
+    p = tmp_path / "m.md"
+    p.write_text(
+        "---\nname: m\nreverify_status: stale\nreverify_note: x\nreverify_checked: 2026-05-31\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    wrote = write_back_verdict(p, _SV(status="fresh"), "2026-06-09")
+    assert wrote is True
+    txt = p.read_text(encoding="utf-8")
+    assert "reverify_status" not in txt   # stale→fresh 전이 시 키 제거
+    assert "name: m" in txt and "body" in txt
+
+
+def test_write_back_noop_when_fresh_and_no_flag(tmp_path):
+    p = tmp_path / "m.md"
+    orig = "---\nname: m\n---\n\narctic-ko 정상\n"
+    p.write_text(orig, encoding="utf-8")
+    wrote = write_back_verdict(p, _SV(status="fresh"), "2026-06-09")
+    assert wrote is False
+    assert p.read_text(encoding="utf-8") == orig  # fresh 메모리 무손상
+
+
+# --- scan_memories + sidecar ---
+def _fake_root_for_scan(tmp_path):
+    src = tmp_path / "code" / "src"
+    src.mkdir(parents=True)
+    (src / "memory_indexer.py").write_text(
+        'EMBED_URL = "http://localhost:8081/embed"\n# Arctic\n', encoding="utf-8"
+    )
+    return tmp_path / "code"
+
+
+def test_scan_flags_only_stale(tmp_path, monkeypatch):
+    root = _fake_root_for_scan(tmp_path)
+    mem = tmp_path / "mem"
+    mem.mkdir()
+    (mem / "stale.md").write_text("---\nname: s\n---\n\nBGE-M3 임베딩\n", encoding="utf-8")
+    (mem / "fresh.md").write_text("---\nname: f\n---\n\narctic-ko 동작\n", encoding="utf-8")
+    (mem / "hist.md").write_text("---\nname: h\n---\n\nBGE-M3 → arctic 교체\n", encoding="utf-8")
+    (mem / "MEMORY.md").write_text("index\n", encoding="utf-8")
+    monkeypatch.setenv("MV3_DATA_DIR", str(tmp_path / "data"))
+    stats = scan_memories(mem, root=root, checked="2026-05-31")
+    assert stats["flagged"] == 1
+    assert "reverify_status: stale" in (mem / "stale.md").read_text(encoding="utf-8")
+    assert "reverify_status" not in (mem / "fresh.md").read_text(encoding="utf-8")
+    assert "reverify_status" not in (mem / "hist.md").read_text(encoding="utf-8")
+
+
+def test_maybe_scan_due_first_run_then_skips(tmp_path, monkeypatch):
+    root = _fake_root_for_scan(tmp_path)
+    mem = tmp_path / "mem"
+    mem.mkdir()
+    (mem / "s.md").write_text("---\nname: s\n---\n\nBGE-M3\n", encoding="utf-8")
+    monkeypatch.setenv("MV3_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MV3_REVERIFY_ROOT", str(root))
+    s1 = maybe_scan_due(mem, interval_days=7)
+    assert s1 is not None and s1["flagged"] == 1   # 첫 실행 → scan
+    s2 = maybe_scan_due(mem, interval_days=7)
+    assert s2 is None                               # sidecar 최신 → skip
