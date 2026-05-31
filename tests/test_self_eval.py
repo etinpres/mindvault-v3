@@ -1241,6 +1241,32 @@ class TestRecallUtilizationGate(unittest.TestCase):
         self.assertEqual(self_eval.RECALL_UTILIZATION_TARGET, 0.15)
         self.assertEqual(self_eval.RECALL_UTILIZATION_MIN_JUDGED, 30)
 
+    def test_gate_discloses_measurement_scope(self):
+        # audit R2C-1: 게이트는 Layer-4 hook 회수면만 측정함을 scope 로 명시 —
+        # compact 재주입 효과를 과대 인증하지 않도록. pass/insufficient 양 경로 모두 노출.
+        from self_eval import recall_utilization_gate
+        big = {"by_status": {"cited": 6, "marker_only": 4, "unused": 30, "no_response": 0},
+               "utilization_rate_strict": 0.15}
+        small = {"by_status": {"cited": 1, "marker_only": 0, "unused": 2, "no_response": 0},
+                 "utilization_rate_strict": 0.33}
+        for util in (big, small):
+            g = recall_utilization_gate(util, target=0.15, min_judged=30)
+            self.assertIn("scope", g)
+            self.assertIn("layer4", g["scope"])
+            self.assertIn("compact", g["scope"])
+
+    def test_target_arg_rejects_nonfinite_and_out_of_range(self):
+        # audit R2A-1: --target 가 nan/inf 면 json.dump 가 비-스펙 NaN/Infinity 토큰 출력 →
+        # argparse 단계에서 [0,1] 유한 실수만 통과시켜 차단.
+        import argparse
+        from self_eval import _target_arg
+        for bad in ("nan", "inf", "-inf", "2.0", "-0.1", "abc"):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                _target_arg(bad)
+        for good in ("0", "0.15", "1.0", "0.5"):
+            v = _target_arg(good)
+            self.assertTrue(0.0 <= v <= 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

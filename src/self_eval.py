@@ -1065,6 +1065,12 @@ def recall_utilization(
 # 측정 로직 자체는 불변 — 게이트는 판정만 얹는다(자동 튜닝 안 함, D6).
 RECALL_UTILIZATION_TARGET = 0.15
 RECALL_UTILIZATION_MIN_JUDGED = 30
+# audit R2C-1: 게이트가 신뢰하는 strict 는 recall_utilization 의 측정면 =
+# Layer-4 hook 회수(UserPromptSubmit) 만 포함한다. compact 재주입(SessionStart)은
+# 동일 CONTRACT 를 싣지만 measurement 면에서 제외(_compact_metric 은 recalled_ids 미기록 +
+# RECALL_INJECTION_HEADERS 가 compact intro 의 em-dash 변형 미인식). 측정 로직은 동결(D6)
+# 이라 여기선 강제 측정 통합 대신 scope 를 명시 — 회수면 합산은 Phase 2 후속.
+RECALL_UTILIZATION_SCOPE = "layer4_hook_recall (compact 재주입 효과 미측정 — D6 측정 동결)"
 
 
 def recall_utilization_gate(
@@ -1078,7 +1084,10 @@ def recall_utilization_gate(
     의 judged 정의와 동일). judged < min_judged 면 'insufficient_sample'
     (pass=False) — 소표본 noise 로 게이트가 흔들리는 것을 차단.
 
-    반환: {pass, strict, target, judged, min_judged, reason}
+    scope (audit R2C-1): strict 는 Layer-4 hook 회수면만 측정 — compact 재주입
+    효과는 미측정. 게이트가 '효과적 회수' 를 과대 인증하지 않도록 명시한다.
+
+    반환: {pass, strict, target, judged, min_judged, scope, reason}
     """
     by = util_result.get("by_status", {}) or {}
     judged = (
@@ -1092,6 +1101,7 @@ def recall_utilization_gate(
             "target": target,
             "judged": judged,
             "min_judged": min_judged,
+            "scope": RECALL_UTILIZATION_SCOPE,
             "reason": f"insufficient_sample (judged={judged} < {min_judged})",
         }
     passed = strict >= target
@@ -1101,8 +1111,24 @@ def recall_utilization_gate(
         "target": target,
         "judged": judged,
         "min_judged": min_judged,
+        "scope": RECALL_UTILIZATION_SCOPE,
         "reason": f"strict {strict:.4f} {'>=' if passed else '<'} target {target:.4f}",
     }
+
+
+def _target_arg(s: str) -> float:
+    """--target CLI 검증 — [0,1] 유한 실수만 허용. range 비교가 nan/inf 를
+    자동 거부한다(nan/inf 통과 시 json.dump 가 비-스펙 NaN/Infinity bare token
+    을 출력해 엄격 파서가 깨짐 — audit R2A-1)."""
+    try:
+        v = float(s)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"--target 는 숫자여야 함 (받음: {s!r})")
+    if not (0.0 <= v <= 1.0):   # nan→False, inf→False 라 비유한값도 함께 거부
+        raise argparse.ArgumentTypeError(
+            f"--target 는 0.0~1.0 사이 유한 실수여야 함 (받음: {s!r})"
+        )
+    return v
 
 
 def _percentile(sorted_values: list[int], p: float) -> float:
@@ -1243,9 +1269,9 @@ def main() -> int:
     )
     parser.add_argument(
         "--target",
-        type=float,
+        type=_target_arg,
         default=RECALL_UTILIZATION_TARGET,
-        help="--recall-utilization strict cited 목표치 (default %(default)s, "
+        help="--recall-utilization strict cited 목표치 [0.0~1.0] (default %(default)s, "
              "Phase 1② 완료 게이트 — spec §4.3②)",
     )
     parser.add_argument(
