@@ -457,3 +457,40 @@ def test_default_root_flat_deploy(tmp_path, monkeypatch):
         assert v.status == "stale"                           # 진짜 stale 을 fresh 로 흘리지 않음
     finally:
         sys.modules.pop("reverify_flat_test", None)
+
+
+# ---- sweep round-2 fixes ----
+def test_lone_cr_frontmatter_can_be_flagged(tmp_path):
+    """audit R2: classic-Mac lone-CR(\\r-only) frontmatter 도 정규화돼 stale flag 가능
+    (R1 _read_raw 가 lone-CR 을 그대로 둬 _FM_RE 미매칭→미flag 하던 회귀 차단)."""
+    from reverify import write_back_verdict, StaleVerdict, _current_reverify_status, _read_raw
+    p = tmp_path / "m.md"
+    p.write_bytes(b"---\rname: m\r---\r\rbody bge-m3\r")   # lone CR (no \n)
+    assert write_back_verdict(p, StaleVerdict(status="stale", note="n"), "2026-05-31") is True
+    assert _current_reverify_status(_read_raw(p)) == "stale"
+
+
+def test_read_raw_preserves_crlf_normalizes_lone_cr(tmp_path):
+    """\\r\\n 은 보존, 단독 \\r 만 LF 로 정규화."""
+    from reverify import _read_raw
+    p = tmp_path / "m.md"
+    p.write_bytes(b"a\r\nb\rc\n")
+    assert _read_raw(p) == "a\r\nb\nc\n"   # CRLF 유지, lone CR → LF
+
+
+def test_atomic_write_pid_unique_tmp(tmp_path, monkeypatch):
+    """audit R2: _atomic_write tmp 가 PID-unique (동시 SessionEnd write race 차단)."""
+    import os as _os
+    import reverify
+    captured = {}
+    real = _os.replace
+
+    def spy(src, dst):
+        captured["src"] = str(src)
+        return real(src, dst)
+
+    monkeypatch.setattr(reverify.os, "replace", spy)
+    p = tmp_path / "x.md"
+    assert reverify._atomic_write(p, "data") is True
+    assert f".{_os.getpid()}.tmp" in captured["src"]   # PID-scoped tmp
+    assert p.read_text() == "data"

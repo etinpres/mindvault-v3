@@ -237,20 +237,30 @@ def _current_reverify_note(text: str) -> str:
 
 
 def _read_raw(path: Path) -> Optional[str]:
-    """파일을 universal-newline 변환 없이(newline="") 읽어 CRLF 를 보존.
+    """파일을 universal-newline 변환 없이(newline="") 읽되 CRLF 는 보존, 단독 CR 만 LF 로.
 
     Path.read_text 는 \\r\\n 을 \\n 으로 접어서, stale write-back 시 본문 line
-    ending 이 통째로 LF 로 바뀌는 부작용이 있었다(audit). 실패 시 None.
+    ending 이 통째로 LF 로 바뀌는 부작용이 있었다(audit R1). 실패 시 None.
+
+    단독 CR(\\r, classic-Mac, \\n 미동반)은 \\n 으로 정규화한다(audit R2): _FM_RE 가
+    \\r?\\n 만 인식하므로, 정규화 안 하면 lone-CR frontmatter 를 scan 이 못 잡고
+    reverify_cli list(read_text=universal-newline)와도 어긋난다. \\r\\n 은 그대로 둬
+    CRLF 본문 보존(R1) 유지. lone-CR 은 2001년 이전 Mac 외엔 사실상 부재.
     """
     try:
         with open(path, "r", encoding="utf-8", newline="") as f:
-            return f.read()
+            text = f.read()
     except (OSError, UnicodeDecodeError):
         return None
+    return re.sub(r"\r(?!\n)", "\n", text)  # lone CR → LF (CRLF 은 보존)
 
 
 def _atomic_write(path: Path, content: str) -> bool:
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    # PID-unique tmp — 고정 ".tmp" 는 동시 SessionEnd(sibling Conductor workspaces)가
+    # 같은 공유 메모리 파일/sidecar 에 쓸 때 한쪽 finally-unlink 가 다른쪽 tmp 를 지워
+    # os.replace 실패→쓰기 silent 손실(audit R2). alias_generator/contradiction_review_cli
+    # 동일 관례.
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
     try:
         # newline="" — content 의 \r\n 을 그대로 디스크에 쓴다(본문 line ending 보존).
         with open(tmp, "w", encoding="utf-8", newline="") as f:
