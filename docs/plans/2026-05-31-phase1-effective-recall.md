@@ -344,7 +344,7 @@ Expected: PASS (Task 1 구현이 이미 올바르면 즉시 통과 — 이 Task 
 - [ ] **Step 3: 전체 회귀 확인**
 
 Run: `python3 -m pytest -q`
-Expected: 기존 baseline(667 passed, 1 skipped, 25 subtests) + 신규(Task1 1건 + Task2 4건 + Task3 2건 = 7건) 통과.
+Expected: 기존 baseline(667 passed, 1 skipped, 25 subtests) + 신규(Task1 1건 + Task2 5건 + Task3 2건 = 8건) → **675 passed** 통과. (Task2 의 게이트 테스트는 4건 계획 + 코드리뷰 폴리시로 `test_strict_exactly_at_target_passes` 경계 테스트 1건 추가 = 5건.)
 
 > `test_e2e_4_hook_performance`(avg<150ms)는 동시부하 시 flake. FAIL 시 격리 재실행으로 확인:
 > `python3 -m pytest tests/test_e2e.py::...::test_e2e_4_hook_performance -v` (격리 통과 = 코드 회귀 아님)
