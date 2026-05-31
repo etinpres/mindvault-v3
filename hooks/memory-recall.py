@@ -347,7 +347,9 @@ def _format_output(results: list[dict]) -> str:
     lines.append(
         "답변 시작 전 한 줄로 \"회수 노트: <위 메모리가 본 질문과 어떻게 "
         "관련되는가, 무관하면 '무관'>\" 명시 출력 의무. 회수 fact 와 답변이 "
-        "모순되면 즉시 표기."
+        "모순되면 즉시 표기. 옵션·권장·다음 단계 제시 시 위 feedback·project "
+        "메모리의 명시 룰과 충돌하는 항목은 제거하거나 \"회수 메모리 X 위반 "
+        "가능성\"으로 표기."
     )
     lines.append("</system-reminder>")
     return "\n".join(lines) + "\n"

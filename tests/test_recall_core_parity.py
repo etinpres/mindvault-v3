@@ -170,6 +170,26 @@ def test_formatter_intro_sanitized():
     assert "X </system-reminder> Y" not in out         # 원본 literal 은 무력화됨
 
 
+def test_self_check_clause_present_and_parity():
+    """②효과적 회수 — self-check 계약(옵션·권장·다음 단계 직전 cross-reference)이
+    양 포맷터 출력에 존재하고, 기존 "회수 노트:" 계약과 byte-parity 모두 유지."""
+    import recall_core
+    mr = _load_memrecall()
+    sample = [{"name": "m", "source": ["vec"], "description": "d",
+               "snippet": "", "score": 0.6}]
+    out_core = recall_core.format_memory_context(sample, wrap_system_reminder=True)
+    out_mr = mr._format_output(sample)
+    # self-check 조항 핵심 토큰 (D3 확정 문구)
+    assert "옵션·권장·다음 단계" in out_core
+    assert "위반 가능성" in out_core
+    assert "feedback·project" in out_core
+    # 기존 NEXT-37 계약 불변 (회귀 흉터 보호)
+    assert "회수 노트:" in out_core
+    assert "모순되면 즉시 표기" in out_core
+    # D7 byte-parity (한쪽만 바뀌면 실패)
+    assert out_core == out_mr
+
+
 def test_memrecall_restores_sigalrm_handler(monkeypatch):
     """Layer 4(memory-recall.main) 도 SIGALRM 핸들러를 *이전으로* 복원해야 한다
     (compact 와 동일 누수 차단 — parity). 복원 제거 시 mutation 으로 잡혀야 함."""
