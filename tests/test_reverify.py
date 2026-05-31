@@ -1,6 +1,4 @@
 """Phase 1③ 신뢰성 검증 — stale 자동 감지 테스트."""
-import pytest
-
 from reverify import (
     CanonicalFact,
     CANONICAL_FACTS,
@@ -82,3 +80,18 @@ def test_verify_registry_all_live_on_real_repo():
     실패 = 코드가 또 바뀌었는데 registry 미갱신 (registry stale)."""
     failed = verify_registry(default_root())
     assert failed == [], f"registry stale — verifier fail: {failed}"
+
+
+def test_current_value_not_matched_as_substring(tmp_path):
+    """current_value 'arctic' 가 'subarctic' 안에서 오매칭되어 stale 을 잘못 면제하면 안 됨."""
+    root = _fake_root(tmp_path)
+    v = check_memory_staleness("The subarctic region still uses BGE-M3.", root)
+    assert v.status == "stale"           # subarctic ≠ arctic → 면제 안 됨 → stale
+    assert "embedding_model" in v.note
+
+
+def test_token_matches_adjacent_korean(tmp_path):
+    """'arctic임베딩'(한국어 바로 붙음)도 arctic 포함으로 인정 (면제)."""
+    root = _fake_root(tmp_path)
+    v = check_memory_staleness("arctic임베딩 사용 중, 예전 BGE-M3 표기.", root)
+    assert v.status == "fresh"           # arctic 동반 → embedding_model 면제

@@ -39,7 +39,7 @@ def _grep_present(root: Path, rel_path: str, pattern: str) -> bool:
 class CanonicalFact:
     key: str
     current_value: str            # 현행 진실 토큰 (회수 메모리가 이걸 언급하면 면제)
-    stale_aliases: tuple          # 현재처럼 주장되면 stale 인 옛 토큰들
+    stale_aliases: tuple[str, ...]  # 현재처럼 주장되면 stale 인 옛 토큰들
     verifier: Callable            # (root: Path) -> bool : current_value 가 라이브?
     description: str = ""
 
@@ -50,7 +50,7 @@ CANONICAL_FACTS = (
     CanonicalFact(
         key="embedding_model",
         current_value="arctic",
-        stale_aliases=("bge-m3", "bge_m3"),
+        stale_aliases=("bge-m3", "bge_m3", "bge m3"),
         verifier=lambda root: _grep_present(root, "src/memory_indexer.py", r"arctic"),
         description="임베딩 모델 (Sprint 9/14 BGE-M3 → Arctic-ko 교체)",
     ),
@@ -65,12 +65,17 @@ CANONICAL_FACTS = (
 
 
 def _contains_token(text: str, token: str) -> bool:
-    """대소문자 무시 토큰 포함 검사. 숫자 토큰은 word-boundary(18081 안 8081 오매칭 차단)."""
-    t = text.lower()
-    tok = token.lower()
-    if tok.isdigit():
-        return re.search(rf"(?<!\d){re.escape(tok)}(?!\d)", t) is not None
-    return tok in t
+    """대소문자 무시 토큰 포함 검사. 라틴 영숫자 경계로 부분어 오매칭 차단.
+
+    경계 `(?<![A-Za-z0-9])tok(?![A-Za-z0-9])` 는 라틴 알파벳/숫자 이웃만 막고
+    한국어/구두점 인접은 허용한다 → 'arctic임베딩'·'arctic-ko' 는 매칭(포함),
+    'subarctic'·'18081' 안의 토큰은 비매칭(오탐 차단). 숫자·하이픈·언더스코어·
+    공백 포함 토큰 모두 동일 규칙. \\b 는 한국어를 \\w 로 봐 'arctic임' 인접을
+    잘못 끊으므로 쓰지 않는다.
+    """
+    return re.search(
+        rf"(?<![A-Za-z0-9]){re.escape(token.lower())}(?![A-Za-z0-9])", text.lower()
+    ) is not None
 
 
 @dataclass
@@ -81,7 +86,7 @@ class StaleVerdict:
 
 
 def check_memory_staleness(
-    text: str, root: Optional[Path] = None, facts=CANONICAL_FACTS
+    text: str, root: Optional[Path] = None, facts: tuple = CANONICAL_FACTS
 ) -> StaleVerdict:
     """메모리 텍스트(frontmatter+body)를 현행 코드와 대조해 stale 판정 (설계 §2).
 
@@ -107,7 +112,7 @@ def check_memory_staleness(
     return StaleVerdict(status="fresh")
 
 
-def verify_registry(root: Optional[Path] = None, facts=CANONICAL_FACTS) -> List[dict]:
+def verify_registry(root: Optional[Path] = None, facts: tuple = CANONICAL_FACTS) -> List[dict]:
     """각 fact 의 current_value 가 라이브 코드에 실재하는지 self-check.
 
     반환: verifier fail 한 fact 들 [{key, description}] — registry stale 경고용.
