@@ -70,6 +70,17 @@ os.environ["MV3_SCRIPTS_DIR"] = str(_TMP_ROOT / "scripts")
 # runtime dir (debug.log, contradictions.jsonl). 격리 안 하면 테스트가
 # production ~/.claude/mindvault-v3/contradictions.jsonl 에 append 함.
 os.environ["MV3_RUNTIME_DIR"] = str(_TMP_ROOT / "runtime")
+# Phase 1③ audit (2026-05-31): MV3_MEMORY_DIR / MV3_PROJECTS_DIR /
+# MV3_EXTRA_MEMORY_DIRS 도 강제 격리. 사용자 셸이 MV3_MEMORY_DIR=<실제 메모리 dir>
+# 를 export 하는데 _default_memory_dir() 가 이를 **1순위**로 본다. 격리하지
+# 않으면 SessionEnd 경로(또는 reverify scan)를 타는 테스트가 **실제 메모리
+# 파일을 변경**한다 — ②까지는 메모리 파일에 쓰는 코드가 없어 무해했으나 ③
+# reverify scan 이 frontmatter 를 쓰면서 실제 데이터 오염 발생(test_index_sync
+# 가 main() 의 reverify step 을 mock 없이 통과 → 실제 memory dir scan). MV3_
+# PROJECTS_DIR 도 tmp 로 둬 MV3_MEMORY_DIR 만 delenv 해도 실제로 안 떨어지게 한다.
+os.environ["MV3_MEMORY_DIR"] = str(_TMP_ROOT / "memory")
+os.environ["MV3_PROJECTS_DIR"] = str(_TMP_ROOT / "projects")
+os.environ["MV3_EXTRA_MEMORY_DIRS"] = ""
 
 for _p in (
     Path(os.environ["MV3_DATA_DIR"]),
@@ -77,6 +88,7 @@ for _p in (
     Path(os.environ["MV3_HOOKS_DIR"]),
     Path(os.environ["MV3_SCRIPTS_DIR"]),
     Path(os.environ["MV3_RUNTIME_DIR"]),
+    Path(os.environ["MV3_MEMORY_DIR"]),
 ):
     _p.mkdir(parents=True, exist_ok=True)
 

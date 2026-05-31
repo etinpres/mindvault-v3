@@ -37,11 +37,39 @@ def _load_worktree_module(name: str, src_dir: Path = _WORKTREE_SRC):
 
 
 def test_env_var_set_by_conftest():
-    """conftest.py 가 MV3_DATA_DIR / MV3_PROJECTS_ROOT / MV3_HOOKS_DIR / MV3_SCRIPTS_DIR 를 tmp 로 강제."""
-    for var in ("MV3_DATA_DIR", "MV3_PROJECTS_ROOT", "MV3_HOOKS_DIR", "MV3_SCRIPTS_DIR"):
+    """conftest.py 가 path env var 를 tmp 로 강제 (MV3_MEMORY_DIR 포함 — Phase 1③ audit)."""
+    for var in (
+        "MV3_DATA_DIR", "MV3_PROJECTS_ROOT", "MV3_HOOKS_DIR", "MV3_SCRIPTS_DIR",
+        "MV3_MEMORY_DIR", "MV3_PROJECTS_DIR",
+    ):
         val = os.environ.get(var, "")
         assert val, f"{var} not set"
         assert "mv3-pytest-isolation" in val, f"{var}={val} is not tmp"
+    # MV3_EXTRA_MEMORY_DIRS 는 비어 있어야 함 (사용자 셸의 handoff 등 실제 dir 누출 차단)
+    assert os.environ.get("MV3_EXTRA_MEMORY_DIRS", "") == "", (
+        "MV3_EXTRA_MEMORY_DIRS 가 격리 안 됨 — 실제 dir 누출 위험"
+    )
+
+
+def test_memory_dir_isolated_from_real_memory():
+    """Phase 1③ audit 회귀 — 테스트 중 session_memory_end.MEMORY_DIR 가 **실제**
+    메모리 dir 이면 안 된다. 사용자 셸의 MV3_MEMORY_DIR=<real> export 를 conftest 가
+    격리하지 못하면, SessionEnd reverify scan 을 타는 테스트(test_index_sync 등)가
+    실제 메모리 frontmatter 를 변경한다(2026-05-31 실측 사고).
+    """
+    real_memory = Path("~/.claude/projects/-Users-yonghaekim/memory").expanduser()
+    tmp_memory = Path(os.environ["MV3_MEMORY_DIR"])
+
+    sme = _load_worktree_module("session_memory_end")
+    assert sme.MEMORY_DIR == tmp_memory, (
+        f"session_memory_end.MEMORY_DIR={sme.MEMORY_DIR} != 격리 tmp {tmp_memory}"
+    )
+    assert sme.MEMORY_DIR != real_memory, (
+        f"session_memory_end.MEMORY_DIR 가 실제 메모리 dir 을 가리킴 — 테스트가 "
+        f"사용자 데이터를 변경할 수 있다 ({sme.MEMORY_DIR})"
+    )
+    # 실제 메모리 dir 의 부모 슬롯도 아니어야 (STAGED_DIR 등 하위 쓰기 방지)
+    assert real_memory not in sme.MEMORY_DIR.parents and sme.MEMORY_DIR not in real_memory.parents
 
 
 def test_src_modules_honor_env_var():
