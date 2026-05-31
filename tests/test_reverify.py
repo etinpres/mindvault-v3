@@ -108,10 +108,11 @@ from reverify import StaleVerdict as _SV  # noqa
 
 # --- upsert 순수 함수 ---
 def test_upsert_adds_keys_no_frontmatter():
+    from reverify import _current_reverify_note
     out = upsert_reverify_frontmatter("본문만 있음", "stale", "n1", "2026-05-31")
     assert out.startswith("---\n")
     assert "reverify_status: stale" in out
-    assert "reverify_note: n1" in out
+    assert _current_reverify_note(out) == "n1"   # JSON 인용돼 저장, 디코드 시 원본
     assert "본문만 있음" in out
 
 
@@ -124,16 +125,18 @@ def test_upsert_preserves_body_and_existing_keys():
 
 
 def test_upsert_replaces_existing_reverify_keys():
+    from reverify import _current_reverify_note
     text = "---\nname: m\nreverify_status: stale\nreverify_note: old\nreverify_checked: 2026-01-01\n---\n\nbody\n"
     out = upsert_reverify_frontmatter(text, "stale", "new", "2026-05-31")
     assert out.count("reverify_status:") == 1
-    assert "reverify_note: new" in out
+    assert _current_reverify_note(out) == "new"
     assert "old" not in out
 
 
 def test_upsert_note_oneline():
+    from reverify import _current_reverify_note
     out = upsert_reverify_frontmatter("body", "stale", "줄1\n줄2", "2026-05-31")
-    assert "reverify_note: 줄1 줄2" in out
+    assert _current_reverify_note(out) == "줄1 줄2"   # 단일 라인 정규화 + 디코드
     assert out.count("reverify_note:") == 1
 
 
@@ -380,3 +383,77 @@ def test_grep_present_flat_layout(tmp_path):
     from reverify import _grep_present
     (tmp_path / "memory_indexer.py").write_text("EMBED_URL=...8081...\n# Arctic\n", encoding="utf-8")
     assert _grep_present(tmp_path, "src/memory_indexer.py", r"arctic") is True   # basename 폴백
+
+
+# ---- sweep round-1 fixes ----
+def test_reverify_note_with_colon_yaml_safe(tmp_path):
+    """audit: 확장 fact alias 에 ': ' 가 있어도 reverify_note 가 yaml.safe_load 로
+    round-trip (frontmatter 전체 소실 차단). 라인 reader 도 디코드 일치(idempotent)."""
+    import yaml
+    from reverify import upsert_reverify_frontmatter, _FM_RE, _current_reverify_note
+    note = "embedding_model 현재형 참조 mode: legacy (현행 arctic 미언급)"  # ': ' 위험류
+    out = upsert_reverify_frontmatter("---\nname: m\n---\n\nbody\n", "stale", note, "2026-05-31")
+    d = yaml.safe_load(_FM_RE.match(out).group(1))     # 안 깨져야(YAMLError 없음)
+    assert d["reverify_status"] == "stale"
+    assert d["reverify_note"] == note                   # yaml 디코드 == 원본
+    assert _current_reverify_note(out) == note          # 라인 reader 디코드 == 원본
+
+
+def test_reverify_note_hash_yaml_safe(tmp_path):
+    """선행 '#' 토큰도 truncate 되지 않고 round-trip."""
+    import yaml
+    from reverify import upsert_reverify_frontmatter, _FM_RE
+    note = "ticket 현재형 참조 #1234 (현행 foo 미언급)"
+    out = upsert_reverify_frontmatter("---\nname: m\n---\n\nb\n", "stale", note, "2026-05-31")
+    d = yaml.safe_load(_FM_RE.match(out).group(1))
+    assert d["reverify_note"] == note                   # '#' 이후 truncate 안 됨
+
+
+def test_write_back_idempotent_with_quoted_note(tmp_path):
+    """JSON 인용 note 로도 idempotency 유지 (날짜만 달라지면 재기록 안 함)."""
+    from reverify import write_back_verdict, StaleVerdict
+    p = tmp_path / "m.md"
+    p.write_text("---\nname: m\n---\n\nBGE-M3\n", encoding="utf-8")
+    v = StaleVerdict(status="stale", note="embedding_model 현재형 참조 bge-m3 (현행 arctic 미언급)")
+    assert write_back_verdict(p, v, "2026-05-31") is True
+    first = p.read_text(encoding="utf-8")
+    assert write_back_verdict(p, v, "2026-06-09") is False   # status/note 불변 → no-write
+    assert p.read_text(encoding="utf-8") == first
+
+
+def test_crlf_body_preserved_on_stale_writeback(tmp_path):
+    """audit: CRLF 메모리가 stale flag 돼도 본문 line ending 이 LF 로 무단 변환 안 됨."""
+    from reverify import write_back_verdict, StaleVerdict
+    p = tmp_path / "m.md"
+    p.write_bytes(b"---\r\nname: m\r\n---\r\n\r\nbody line1 bge-m3\r\nbody line2\r\n")
+    assert write_back_verdict(p, StaleVerdict(status="stale", note="n"), "2026-05-31") is True
+    raw = p.read_bytes()
+    assert b"body line1 bge-m3\r\n" in raw      # 본문 CRLF 보존
+    assert b"body line2\r\n" in raw
+    assert b"reverify_status: stale" in raw     # flag 는 기록됨
+
+
+def test_default_root_flat_deploy(tmp_path, monkeypatch):
+    """audit: flat 배포(reverify.py 와 memory_indexer.py 같은 dir)에서 default_root 가
+    그 dir 로 해석되고 verify_registry 통과(verifier 무력화 안 됨)."""
+    import importlib.util
+    import shutil
+    import sys
+    from pathlib import Path
+    monkeypatch.delenv("MV3_REVERIFY_ROOT", raising=False)
+    flat = tmp_path / "mindvault"
+    flat.mkdir()
+    src = Path(__file__).resolve().parent.parent / "src"
+    shutil.copy2(src / "reverify.py", flat / "reverify.py")
+    shutil.copy2(src / "memory_indexer.py", flat / "memory_indexer.py")  # grep 대상(arctic/8081)
+    spec = importlib.util.spec_from_file_location("reverify_flat_test", flat / "reverify.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["reverify_flat_test"] = mod   # dataclass __module__ 해소(default_factory)
+    try:
+        spec.loader.exec_module(mod)
+        assert mod.default_root() == flat                   # parent.parent overshoot 아님
+        assert mod.verify_registry() == []                  # flat sibling 을 basename 폴백으로 찾음
+        v = mod.check_memory_staleness("BGE-M3 포트 8765 사용")   # default_root 사용
+        assert v.status == "stale"                           # 진짜 stale 을 fresh 로 흘리지 않음
+    finally:
+        sys.modules.pop("reverify_flat_test", None)

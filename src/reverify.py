@@ -21,11 +21,26 @@ from typing import Callable, List, Optional
 
 
 def default_root() -> Path:
-    """현행 코드 ground truth root. MV3_REVERIFY_ROOT env 우선, 기본 = repo root."""
+    """현행 코드 ground truth root. MV3_REVERIFY_ROOT env 우선.
+
+    env 미지정 시 layout 자동 판별 (audit: flat 배포 overshoot 차단):
+      - repo  : src/reverify.py → parent.parent(repo root) 에 src/memory_indexer.py 존재
+      - flat 배포: ~/.claude/scripts/mindvault/reverify.py → 같은 dir 에 memory_indexer.py
+        sibling → root=그 dir (verifier 의 basename 폴백이 root/memory_indexer.py 매칭)
+    verifier 가 grep 하는 rel_path("src/memory_indexer.py")가 root 기준 1차 또는
+    basename 폴백으로 둘 다에서 resolve 되도록 root 를 고른다.
+    """
     env = os.environ.get("MV3_REVERIFY_ROOT", "").strip()
     if env:
         return Path(env).expanduser().resolve()
-    return Path(__file__).resolve().parent.parent  # src/reverify.py → repo root
+    here = Path(__file__).resolve().parent
+    # repo layout: repo_root/src/memory_indexer.py
+    if (here.parent / "src" / "memory_indexer.py").is_file():
+        return here.parent
+    # flat 배포 layout: reverify.py 와 memory_indexer.py 가 같은 dir
+    if (here / "memory_indexer.py").is_file():
+        return here
+    return here.parent  # fallback (dev/repo 가정)
 
 
 def _grep_present(root: Path, rel_path: str, pattern: str) -> bool:
@@ -164,7 +179,10 @@ def upsert_reverify_frontmatter(text: str, status: str, note: str, checked: str)
     new_lines = [f"reverify_status: {status}", f"reverify_checked: {checked}"]
     note1 = _oneline(note)
     if note1:
-        new_lines.append(f"reverify_note: {note1}")
+        # note 를 JSON 으로 인용 — JSON 문자열은 유효한 YAML double-quoted scalar 라
+        # 콜론(': ')·'#'·따옴표가 들어가도 yaml.safe_load(recall 경로)가 안 깨진다.
+        # (audit: 미래 fact alias 에 ': ' 포함 시 frontmatter 전체 소실 차단)
+        new_lines.append("reverify_note: " + json.dumps(note1, ensure_ascii=False))
     m = _FM_RE.match(text)
     if not m:
         return "---\n" + "\n".join(new_lines) + "\n---\n\n" + text
@@ -197,17 +215,46 @@ def _current_reverify_status(text: str) -> Optional[str]:
 
 
 def _current_reverify_note(text: str) -> str:
+    """frontmatter 의 reverify_note 값을 디코드해 반환.
+
+    JSON 인용 형식(upsert 가 쓰는 현행)은 json.loads 로 풀고, 옛 비인용 노트는
+    raw strip 로 back-compat. 디코드된 값이 _oneline(note) 와 같아야 idempotent.
+    """
     m = _FM_RE.match(text)
     if not m:
         return ""
     mm = re.search(r"^reverify_note:\s*(.*)$", m.group(1), re.MULTILINE)
-    return mm.group(1).strip() if mm else ""
+    if not mm:
+        return ""
+    raw = mm.group(1).strip()
+    try:
+        decoded = json.loads(raw)
+        if isinstance(decoded, str):
+            return decoded
+    except (ValueError, TypeError):
+        pass
+    return raw
+
+
+def _read_raw(path: Path) -> Optional[str]:
+    """파일을 universal-newline 변환 없이(newline="") 읽어 CRLF 를 보존.
+
+    Path.read_text 는 \\r\\n 을 \\n 으로 접어서, stale write-back 시 본문 line
+    ending 이 통째로 LF 로 바뀌는 부작용이 있었다(audit). 실패 시 None.
+    """
+    try:
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            return f.read()
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def _atomic_write(path: Path, content: str) -> bool:
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
-        tmp.write_text(content, encoding="utf-8")
+        # newline="" — content 의 \r\n 을 그대로 디스크에 쓴다(본문 line ending 보존).
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(content)
         os.replace(tmp, path)
         return True
     except OSError:
@@ -225,9 +272,8 @@ def write_back_verdict(path: Path, verdict: StaleVerdict, checked: str) -> bool:
     - stale: status/note 변화 있을 때만 upsert (idempotent — 불변이면 checked churn 없이 skip).
     - fresh: 기존 flag 있으면 제거(cleanup), 없으면 no-op (fresh 메모리 무손상).
     """
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    text = _read_raw(path)
+    if text is None:
         return False
     cur_status = _current_reverify_status(text)
     if verdict.status == "stale":
@@ -271,9 +317,8 @@ def scan_memories(
     flagged = cleared = processed = 0
     files = _collect_memory_files(mem_dir)
     for p in files:
-        try:
-            text = p.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        text = _read_raw(p)
+        if text is None:
             continue
         processed += 1
         verdict = check_memory_staleness(_strip_reverify_frontmatter(text), root)
