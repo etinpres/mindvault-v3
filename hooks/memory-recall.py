@@ -338,7 +338,10 @@ def _format_output(results: list[dict]) -> str:
         lines.append(f"- [{name}] (score {score:.2f}, {srcs}) — {desc}")
         prov = r.get("provenance") or {}
         if prov.get("source_type") and prov["source_type"] != "unknown":
-            ref = _sanitize(str(prov.get("source_ref") or "")[:8])
+            # session 은 UUID 8자 prefix, url/commit/file 등은 전체(120 캡) — audit:
+            # [:8] 고정이면 url 이 'https://' 로만 잘려 모든 url provenance 가 비구별.
+            _sr = str(prov.get("source_ref") or "")
+            ref = _sanitize(_sr[:8] if prov["source_type"] == "session" else _sr[:120])
             cap = _sanitize(str(prov.get("captured_at") or "")[:10])
             lines.append(f"  출처: {_sanitize(str(prov['source_type']))} {ref} {cap}".rstrip())
         rv = r.get("reverify")

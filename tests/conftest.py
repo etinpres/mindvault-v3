@@ -81,6 +81,11 @@ os.environ["MV3_RUNTIME_DIR"] = str(_TMP_ROOT / "runtime")
 os.environ["MV3_MEMORY_DIR"] = str(_TMP_ROOT / "memory")
 os.environ["MV3_PROJECTS_DIR"] = str(_TMP_ROOT / "projects")
 os.environ["MV3_EXTRA_MEMORY_DIRS"] = ""
+# Phase 1③ audit sweep R1: 서버 게이트 env 도 hermetic 격리. 사용자 셸이
+# MV3_GEMMA_INTENT=1 을 export 하면 통합 hook 테스트(subprocess, env 미지정)가
+# 실제 Gemma(:8080) 로 분류 요청을 보낸다(읽기전용 비파괴지만 비-hermetic). 0 으로
+# 강제. 개별 테스트는 patch.dict({"MV3_GEMMA_INTENT":"1"}) 로 per-test override.
+os.environ["MV3_GEMMA_INTENT"] = "0"
 
 for _p in (
     Path(os.environ["MV3_DATA_DIR"]),

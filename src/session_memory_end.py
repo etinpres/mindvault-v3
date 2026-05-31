@@ -314,6 +314,23 @@ def main() -> int:
             _debug(f"jsonl multi-hit for {sid[:8]}: picked {jsonl.parent.name}")
 
         candidates = extract_from_jsonl(jsonl)
+
+        # Phase 1③ (reliability): stale 재검증 증분 — candidates 유무와 무관하게 매
+        # SessionEnd 시도(maybe_scan_due 가 sidecar 로 7일 self-throttle). no-candidate
+        # 세션(흔함)이 early-return 하기 전에 호출해 '주1회' cadence 가 staging 발생
+        # 여부에 결합되지 않게 한다(audit sweep R1). best-effort silent-fail.
+        try:
+            from reverify import maybe_scan_due
+            rstat = maybe_scan_due(MEMORY_DIR)
+            if rstat is not None:
+                _debug(
+                    f"reverify scan flagged={rstat.get('flagged', 0)} "
+                    f"cleared={rstat.get('cleared', 0)} "
+                    f"processed={rstat.get('processed', 0)}/{rstat.get('total', 0)}"
+                )
+        except Exception as e:
+            _debug(f"reverify skipped: {type(e).__name__}: {e}")
+
         if not candidates:
             _debug(f"no candidates for {sid[:8]}")
             return 0
@@ -376,22 +393,6 @@ def main() -> int:
             )
         except Exception as e:
             _debug(f"alias_sync skipped: {type(e).__name__}: {e}")
-
-        # Phase 1③ (reliability, 2026-05-31): stale 재검증 증분. sidecar last_scan
-        # 이 REVERIFY_INTERVAL_DAYS 보다 오래됐을 때만 결정론 grep scan (LLM 없음 —
-        # 운영비 0). best-effort silent-fail — recall hot-path 무관, 다음 SessionEnd
-        # 재시도 가능. flag-only-stale 이라 fresh 메모리 무손상.
-        try:
-            from reverify import maybe_scan_due
-            rstat = maybe_scan_due(MEMORY_DIR)
-            if rstat is not None:
-                _debug(
-                    f"reverify scan flagged={rstat.get('flagged', 0)} "
-                    f"cleared={rstat.get('cleared', 0)} "
-                    f"processed={rstat.get('processed', 0)}/{rstat.get('total', 0)}"
-                )
-        except Exception as e:
-            _debug(f"reverify skipped: {type(e).__name__}: {e}")
         return 0
     except Exception as e:
         _debug(f"FATAL {e}\n{traceback.format_exc()}")

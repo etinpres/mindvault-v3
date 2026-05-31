@@ -163,5 +163,28 @@ class TestSilentFailure(unittest.TestCase):
         )
 
 
+class TestReverifyNotGatedByCandidates(unittest.TestCase):
+    """audit sweep R1 — 주1회 reverify 가 'if not candidates: return 0' 에 갇혀
+    no-candidate 세션(흔함)에서 cadence 가 starve 되면 안 된다."""
+
+    def test_reverify_fires_on_no_candidate_session(self):
+        mod = _load_session_memory_end()
+        fake_sid = "deadbeef-cafe-1234-5678-abcdef012345"
+        proot_mock = MagicMock()
+        proot_mock.glob.return_value = [Path("/tmp/fake-mv3-test.jsonl")]
+        with patch.object(mod, "_debug"), \
+             patch.object(mod.sys, "stdin", io.StringIO("")), \
+             patch.dict(os.environ, {"CLAUDE_SESSION_ID": fake_sid}, clear=False), \
+             patch.object(mod, "PROJECTS_ROOT", proot_mock), \
+             patch.object(mod, "extract_from_jsonl", return_value=[]), \
+             patch("reverify.maybe_scan_due", return_value=None) as msd:
+            rc = mod.main()
+        self.assertEqual(rc, 0)
+        self.assertTrue(
+            msd.called,
+            "no-candidate 세션에서 reverify(maybe_scan_due) 미호출 — early-return 결합 회귀",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

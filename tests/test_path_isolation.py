@@ -49,6 +49,11 @@ def test_env_var_set_by_conftest():
     assert os.environ.get("MV3_EXTRA_MEMORY_DIRS", "") == "", (
         "MV3_EXTRA_MEMORY_DIRS 가 격리 안 됨 — 실제 dir 누출 위험"
     )
+    # 서버 게이트 env hermetic — 사용자 셸의 MV3_GEMMA_INTENT=1 누출 시 통합 hook
+    # subprocess 테스트가 실제 Gemma 호출. conftest 가 "0" 으로 강제해야 한다.
+    assert os.environ.get("MV3_GEMMA_INTENT") == "0", (
+        "MV3_GEMMA_INTENT 가 격리 안 됨 — 테스트가 실제 Gemma(:8080) 호출 위험"
+    )
 
 
 def test_memory_dir_isolated_from_real_memory():

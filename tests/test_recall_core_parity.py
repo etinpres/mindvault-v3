@@ -352,3 +352,31 @@ def test_stale_label_non_dict_reverify_safe():
     out_mr = mr._format_output(sample)
     assert "재검증 필요:" not in out_core
     assert out_core == out_mr
+
+
+def test_url_provenance_ref_not_scheme_truncated():
+    """audit: url-type source_ref 가 [:8](scheme만)로 잘리지 않고 구별 가능 + byte-parity."""
+    import recall_core
+    mr = _load_memrecall()
+    sample = [{"name": "m", "source": ["vec"], "description": "d", "snippet": "", "score": 0.6,
+               "provenance": {"source_type": "url", "source_ref": "https://youtu.be/abc123XYZ",
+                              "captured_at": "2026-05-30"}}]
+    out_core = recall_core.format_memory_context(sample, wrap_system_reminder=True)
+    out_mr = mr._format_output(sample)
+    assert "youtu.be/abc123XYZ" in out_core        # 전체 ref (scheme만 아님)
+    assert "출처: url https://\n" not in out_core   # 옛 절단 형태 아님
+    assert out_core == out_mr                        # byte-parity
+
+
+def test_session_provenance_ref_still_uuid_prefix():
+    """session 타입은 UUID 8자 prefix 유지(기존 동작 불변) + parity."""
+    import recall_core
+    mr = _load_memrecall()
+    sample = [{"name": "m", "source": ["vec"], "description": "d", "snippet": "", "score": 0.6,
+               "provenance": {"source_type": "session", "source_ref": "abcd1234ef567890",
+                              "captured_at": "2026-05-30"}}]
+    out_core = recall_core.format_memory_context(sample, wrap_system_reminder=True)
+    out_mr = mr._format_output(sample)
+    assert "출처: session abcd1234 " in out_core     # 8자 prefix
+    assert "abcd1234ef" not in out_core              # 9자+ 노출 안 됨
+    assert out_core == out_mr
