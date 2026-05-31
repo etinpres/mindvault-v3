@@ -1203,7 +1203,7 @@ class TestRecallUtilizationGate(unittest.TestCase):
         }
         g = recall_utilization_gate(util, target=0.15, min_judged=30)
         self.assertTrue(g["pass"])
-        self.assertEqual(g["judged"], 30)      # 6+4+20, no_response 제외
+        self.assertEqual(g["judged"], 30)      # 6+4+20, no_response 제외 (== min_judged 경계)
         self.assertEqual(g["target"], 0.15)
 
     def test_fail_below_target(self):
@@ -1225,6 +1225,16 @@ class TestRecallUtilizationGate(unittest.TestCase):
         g = recall_utilization_gate(util, target=0.15, min_judged=30)
         self.assertFalse(g["pass"])           # 표본 부족 → fail (목표 근접해도)
         self.assertIn("insufficient_sample", g["reason"])
+
+    def test_strict_exactly_at_target_passes(self):
+        from self_eval import recall_utilization_gate
+        util = {
+            "by_status": {"cited": 6, "marker_only": 4, "unused": 30, "no_response": 0},
+            "utilization_rate_strict": 0.15,   # == target 경계
+        }
+        g = recall_utilization_gate(util, target=0.15, min_judged=30)
+        self.assertTrue(g["pass"])             # >= 이므로 경계값 통과
+        self.assertIn(">=", g["reason"])
 
     def test_default_target_constant(self):
         import self_eval
