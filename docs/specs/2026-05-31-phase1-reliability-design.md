@@ -256,3 +256,14 @@ bg 세션이라 합리적 기본값을 정했으나, 형의 취향·위험선호
 - **doc 정정**: §D5 note 예시를 콜론 없는 실제 형식으로(콜론은 yaml.safe_load 깨짐), D3 verifier 를 "휴리스틱(주석 매칭 가능)" 으로 솔직화, D4 토큰 경계를 구현 확정값으로, §6 false-positive 방향 명시.
 - **검증된 not-a-bug**: 적대적 finding 중 "`project_mindvault_v1v2_history.md` 가 arctic 미포함이라 오flag" 주장은 **실측 반증**(파일에 arctic 포함 → 정상 면제). 적대적 finding 도 검증 필수임을 재확인.
 - **수용된 tradeoff(미수정)**: `bge-m3.5` 류 접두 매칭(soft 경고라 저비용), 순수 이력 false-positive(저비용), verifier 주석 매칭 한계(verify-registry 사람 안전판), 코드 주석 stale(`memory_search.py:516`, ③ 범위 밖 — §7 형 판단).
+
+### 10.2 다회차 sweep (2026-05-31, `/goal` 워크플로 — find→adversarial verify, loop-until-dry)
+
+위 4-렌즈 audit 후, 워크플로 오케스트레이션(렌즈별 find → refute-by-default verify)으로 Phase 1 ①②③ 전체를 **새 결함 0건까지 반복** 점검. 4 라운드로 수렴(R1 8 → R2 2 → R3 4 → **R4 0**). 누적 13건 수정 + 1건 문서화:
+
+- **★ CRITICAL (별도 발견) — 테스트 격리 누락**: `conftest.py` 가 `MV3_PROJECTS_ROOT`/`DATA_DIR` 는 tmp 격리하나 사용자 셸이 export 하는 `MV3_MEMORY_DIR=<실제 메모리 dir>` 는 미격리. `_default_memory_dir()` 가 이를 1순위로 봐 테스트 중 `MEMORY_DIR`=실제 dir → SessionEnd reverify scan 을 타는 테스트(test_index_sync)가 **형의 실제 메모리 파일을 변경**(②까지는 메모리에 쓰는 코드 부재라 무해, ③ reverify 가 노출). fix: conftest 가 `MV3_MEMORY_DIR`/`PROJECTS_DIR`/`EXTRA_MEMORY_DIRS`/`GEMMA_INTENT` 도 격리 + `test_path_isolation` 가드 2건. (오염된 실제 메모리 3건은 원복.)
+- **R1 (8, med/high)**: ① install.sh 가 reverify.py/reverify_cli.py 미배포 → ③ prod silent no-op(HIGH) ② default_root flat-배포 overshoot ③ reverify_note 미인용 YAML(미래 fact ': ' alias 시 frontmatter 소실) ④ provenance source_ref 미인용 YAML ⑤ 주1회 reverify 가 no-candidate early-return 에 갇힘 ⑥ 출처 ref [:8] 가 url provenance 파괴 ⑦ stale write-back 의 CRLF→LF 본문 무단변환 ⑧ conftest 격리(위 CRITICAL).
+- **R2 (2, low)**: lone-CR frontmatter 미flag + scan/list 불일치 / `_atomic_write` 고정 tmp → 동시 SessionEnd race.
+- **R3 (4)**: maybe_scan_due 미래-timestamp 영구 SKIP(med) / `_is_deprecated` 2KB cap 이 Phase1 frontmatter 성장 시 fence 놓쳐 Layer5 감쇠 누락(low) / FRONTMATTER_RE BOM 비관용(low) / D4 metadata 면제 false-negative(문서화, 실측 0건).
+- **R4: 0건** — 1 라운드 완전 dry, 수렴 확정.
+- 전 과정 회귀 유지(678→741 passed), 실제 메모리 0 오염 재확인, Layer 5(contradiction) 무손상. 상세는 `git log`(fix(reliability) sweep R1~R3 커밋).
