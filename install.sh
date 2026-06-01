@@ -8,7 +8,20 @@ set -euo pipefail
 # ARCH_OVERRIDE 환경변수는 테스트 전용 (tests/test_install_v320.py).
 _ARCH="${ARCH_OVERRIDE:-$(uname -m)}"
 _OS="$(uname -s)"
+
+# v3.x — MV3_SYNC_ONLY: 코드/훅/스킬 파일만 빠르게 재배포하는 경량 경로.
+# 모델 다운로드/변환·pip·plist(launchctl)·헬스체크 대기·인덱싱·pre-warm 을 전부
+# skip 하고 deploy_exec 파일복사 + settings.json 등록만 수행 → sub-second.
+# git post-commit/post-merge 훅이 호출 — repo 수정이 배포 경로에 즉시 반영돼
+# "repo 는 고쳤는데 배포본은 stale" 인 배포 지연(2026-05-28→06-01)을 차단한다.
+# 파일 src→target 매핑은 아래 본문 deploy 호출을 그대로 재사용(단일 진실원본).
+if [ "${MV3_SYNC_ONLY:-0}" = "1" ]; then
+  export MV3_SKIP_MODELS=1   # Sprint 4.5/17 모델 단계 재사용 게이트로 skip
+fi
+
+# 파일 복사만 하는 sync 모드는 arch 무관 — 비arm64 인터랙티브 프롬프트 우회.
 if [ "$_ARCH" != "arm64" ] || [ "$_OS" != "Darwin" ]; then
+ if [ "${MV3_SYNC_ONLY:-0}" != "1" ]; then
   echo "⚠ MindVault v3 의 MLX 백엔드는 Apple Silicon Mac 에서만 동작합니다."
   echo "  현재 환경: $_OS $_ARCH"
   echo "  Linux/Intel Mac 미지원 (MLX 백엔드 Apple Silicon 전용)."
@@ -27,6 +40,7 @@ if [ "$_ARCH" != "arm64" ] || [ "$_OS" != "Darwin" ]; then
     *)   echo "  설치 취소."; exit 1 ;;
   esac
   export MV3_SKIP_MODELS=1
+ fi
 fi
 
 if [ "${MV3_GUARD_ONLY:-0}" = "1" ]; then
@@ -591,6 +605,7 @@ tmp.write_text(serialized)
 os.replace(tmp, path)
 PY
 
+if [ "${MV3_SYNC_ONLY:-0}" != "1" ]; then
 echo ""
 echo "→ Pre-warming Gemma cache (first-session 지연 방지, 최대 45초)..."
 if "$TARGET" </dev/null >/dev/null 2>&1; then
@@ -607,6 +622,7 @@ if python3 "$SCRIPTS_DIR/indexer.py" >/dev/null 2>&1; then
 else
   echo "  (index build skipped)"
 fi
+fi  # MV3_SYNC_ONLY — pre-warm + FTS index skip
 
 echo ""
 echo ""
@@ -629,12 +645,14 @@ SPRINT4_SRC=("$REPO_DIR/src/memory_indexer.py" "$REPO_DIR/src/memory_search.py")
 ARCTIC_MODEL_DIR="$HOME/.cache/mlx-arctic-ko"
 
 # 4.1 Python 의존성
+if [ "${MV3_SYNC_ONLY:-0}" != "1" ]; then
 echo "→ Installing Python dependencies (sqlite-vec mlx-embeddings pyyaml numpy huggingface_hub)..."
 if python3 -m pip install --user --quiet sqlite-vec mlx-embeddings pyyaml numpy huggingface_hub 2>&1 | tail -3; then
   echo "✓ dependencies installed"
 else
   echo "  (warning: dependency install had warnings — Sprint 4 may not work)"
 fi
+fi  # MV3_SYNC_ONLY — pip 의존성 설치 skip
 
 # 4.2 — Arctic-ko 모델 자동 변환은 위 Sprint 4.5 (v3.2.0) 가 처리.
 # (옛 수동 변환 안내 블록은 v3.2.0 에서 제거됨)
@@ -711,6 +729,8 @@ echo "✓ deployed runtime extras ($(echo "${RUNTIME_EXTRA_SRC[@]}" | wc -w | tr
 # 4.4a v3.2.3 (#3) — legacy plist migration (com.yonghaekim.*):
 # - com.yonghaekim.bge-m3-mlx (Sprint 9 이전 설치자)
 # - com.yonghaekim.arctic-ko-mlx (v3.2.0~v3.2.2 설치자 → v3.2.3 sanitize 후 rename)
+# v3.x: SYNC 모드에선 launchctl 재시작(매 커밋마다 임베딩 서버 reload) 회피 위해 skip.
+if [ "${MV3_SYNC_ONLY:-0}" != "1" ]; then
 LEGACY_LAUNCHD_LABELS=(
   "com.yonghaekim.bge-m3-mlx"
   "com.yonghaekim.arctic-ko-mlx"
@@ -729,6 +749,7 @@ if [ -f "$ARCTIC_PLIST_SRC" ]; then
   deploy_plist "$ARCTIC_PLIST_SRC" "$ARCTIC_PLIST_TARGET" "arctic-ko plist" || exit 1
   echo "✓ Arctic-ko launchd service loaded (port 8081)"
 fi
+fi  # MV3_SYNC_ONLY — legacy plist 마이그레이션 + Arctic-ko plist 재시작 skip
 
 # 4.5 hook 배포
 MEMORY_HOOK_DEPLOYED=0
@@ -743,8 +764,11 @@ if [ -f "$MEMORY_HOOK_SRC" ]; then
 fi
 
 # 4.6 헬스체크 (Arctic-ko 모델 로딩 대기 ~10초)
-echo "→ Waiting for Arctic-ko to load (up to 30s)..."
+# v3.x: HEALTH_OK 는 SYNC 가드 밖에서 0 초기화 — set -u 안전 + sync 모드에선 0 으로
+# 남아 아래 초기 인덱싱(HEALTH_OK=1 게이트)도 자동 skip.
 HEALTH_OK=0
+if [ "${MV3_SYNC_ONLY:-0}" != "1" ]; then
+echo "→ Waiting for Arctic-ko to load (up to 30s)..."
 for i in $(seq 1 15); do
   if curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1:8081/health 2>/dev/null | grep -q "200"; then
     HEALTH_OK=1
@@ -759,6 +783,7 @@ else
   echo "  ✗ Arctic-ko health check failed — hook will silently no-op"
   echo "  diagnose: tail ~/Library/Logs/arctic-ko-mlx.err"
 fi
+fi  # MV3_SYNC_ONLY — Arctic-ko 헬스 대기 skip
 
 # 4.7 settings.json UserPromptSubmit hook 등록.
 # v3.2.3 (#4): hook 미배포 시 register skip (broken path 등록 차단).
@@ -845,6 +870,61 @@ print(f'✓ indexed {n} memories')
   echo "→ Pre-warming hook (cold start mitigation)..."
   echo '{"prompt":"warmup"}' | python3 "$MEMORY_HOOK_TARGET" >/dev/null 2>&1 || true
   echo "✓ hook pre-warmed"
+fi
+
+# ── v3.x — 배포 후크화: git hook self-wire + drift 백스톱 ───────────────────────
+# (1) repo 경로 기록 — deploy_drift_check.py 가 src/ 원본을 찾는 데 사용.
+# (2) git post-commit/post-merge 훅 self-wire (core.hooksPath=.githooks) — repo
+#     커밋/머지가 배포 경로에 자동 반영돼 "repo 는 고쳤는데 배포는 stale" 차단.
+# (3) deploy_drift_check SessionStart 훅 배포·등록 — 훅 우회(--no-verify)/외부
+#     동기화 누락 시 세션 시작에 stale 배포 경고 (감사된 session_memory.py 무수정).
+# MV3_SKIP_GIT_WIRE=1 — 테스트 격리용 (실제 repo git config 비변경).
+if [ -d "$REPO_DIR/.git" ] && [ "${MV3_SKIP_GIT_WIRE:-0}" != "1" ]; then
+  echo "$REPO_DIR" > "$INSTALL_MANIFEST_DIR/.repo-path"
+  if git -C "$REPO_DIR" config core.hooksPath .githooks 2>/dev/null; then
+    echo "✓ git hooks wired (core.hooksPath=.githooks — post-commit/post-merge 자동 sync)"
+  else
+    echo "  ⚠ git hooksPath 설정 실패 (수동: git -C $REPO_DIR config core.hooksPath .githooks)"
+  fi
+fi
+
+DRIFT_SRC="$REPO_DIR/scripts/deploy_drift_check.py"
+DRIFT_TARGET="$SCRIPTS_DIR/deploy_drift_check.py"
+if [ -f "$DRIFT_SRC" ]; then
+  if deploy_exec "$DRIFT_SRC" "$DRIFT_TARGET" "deploy-drift-check hook"; then
+    manifest_record "hook" "$DRIFT_TARGET"
+    python3 - "$DRIFT_TARGET" "$SETTINGS" <<'PY'
+import json, os, sys
+from pathlib import Path
+
+cmd = sys.argv[1]
+sp = Path(sys.argv[2])
+try:
+    data = json.loads(sp.read_text())
+except (json.JSONDecodeError, OSError):
+    data = {"hooks": {}}
+hooks = data.setdefault("hooks", {})
+ss = hooks.setdefault("SessionStart", [])
+# 기존 drift 등록 cleanup 후 단일 재등록 (멱등 — install.sh register() 패턴과 일관).
+kept = []
+for entry in ss:
+    h = [x for x in entry.get("hooks", [])
+         if "deploy_drift_check.py" not in (x.get("command") or "")]
+    if h:
+        entry["hooks"] = h
+        kept.append(entry)
+kept.append({"matcher": "*", "hooks": [{"type": "command", "command": cmd}]})
+hooks["SessionStart"] = kept
+serialized = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+json.loads(serialized)  # round-trip 검증 (corruption 차단)
+tmp = sp.with_suffix(sp.suffix + ".tmp")
+tmp.write_text(serialized)
+os.replace(tmp, sp)
+print("✓ registered SessionStart hook (deploy-drift-check)")
+PY
+  else
+    DEPLOY_FAILURES=$((DEPLOY_FAILURES+1))
+  fi
 fi
 
 echo ""
