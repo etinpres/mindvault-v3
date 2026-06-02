@@ -120,10 +120,23 @@ def _find_existing_memory(
     2. slugify(title) == _candidate_slug(stem)
     3. embedding cosine top-1 ≥ EMBED_MATCH_THRESHOLD (의미 매칭, Sprint NEXT-2)
     """
-    new_name = (candidate.get("title") or "").strip().lower()
+    # bug-audit 2026-06-02 (#16): 빈/공백 title 가드. slugify('')='memory' 폴백
+    # 때문에 아래 `if not new_slug` 가드가 dead code 였다 — 빈 title 후보가
+    # slug 'memory' 로 promoted memory.md(소문자 stem) 와 오매칭돼 approve 시
+    # 무관 파일을 overwrite 할 위험. raw title 로 먼저 거른다.
+    _raw_title = (candidate.get("title") or "").strip()
+    if not _raw_title:
+        return None
+    new_name = _raw_title.lower()
     new_slug = slugify(candidate.get("title") or "")
     if not new_slug:
         return None
+    # codex R2 (#16 완성): 구두점-only title("!!!" 등)은 strip 후 비어있지 않아
+    # 위 가드를 통과하지만 slugify 가 'memory' 폴백을 반환해 memory.md(소문자
+    # stem) 와 slug 오매칭된다. slug 문자가 실제로 비었으면(폴백) slug 매칭 자체를
+    # 건너뛰고 name-exact/embedding 으로만 매칭한다.
+    _slug_content = SLUG_CHAR_RE.sub("", re.sub(r"\s+", "_", _raw_title))[:30]
+    _slug_is_fallback = not _slug_content
     # _collect_md_files 가 staged 디렉토리 제외 + _procedural/ 포함.
     # promoted memory 만 대상 — staged 끼리의 update 매칭은 의미 없음.
     fallback_match: dict | None = None
@@ -138,8 +151,8 @@ def _find_existing_memory(
         # 1순위: name exact (가장 신뢰도 높음)
         if new_name and fm_name and new_name == fm_name:
             return {"path": p, "frontmatter": fm, "body": body}
-        # 2순위: slug 일치 (fallback)
-        if existing_slug == new_slug and fallback_match is None:
+        # 2순위: slug 일치 (fallback). 단, new_slug 가 'memory' 폴백이면 skip (#16).
+        if existing_slug == new_slug and not _slug_is_fallback and fallback_match is None:
             fallback_match = {"path": p, "frontmatter": fm, "body": body}
     if fallback_match is not None:
         return fallback_match
@@ -194,8 +207,18 @@ def _find_by_embedding(
     best_path: str | None = None
     best_sim = -1.0
     for r in rows:
-        arr = np.frombuffer(r["embedding"], dtype=np.float32)
+        # bug-audit 2026-06-02 (#15): 손상(비-4배수) blob 은 frombuffer 에서,
+        # 차원 불일치(예: 모델 교체 후 stale 768-dim) row 는 matmul 에서 각각
+        # ValueError 를 던져 전체 스캔을 중단시킨다 → 뒤쪽 유효 후보까지 매칭
+        # 무력화(중복 메모리 양산). 형제 read 경로(memory_search/search)와 동일하게
+        # 손상·불일치 행만 skip 하고 스캔 지속.
+        try:
+            arr = np.frombuffer(r["embedding"], dtype=np.float32)
+        except ValueError:
+            continue
         if arr.size == 0:
+            continue
+        if arr.shape != q.shape:
             continue
         a_norm = float(np.linalg.norm(arr))
         if a_norm == 0:

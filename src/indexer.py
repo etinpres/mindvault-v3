@@ -349,10 +349,10 @@ class EmbedUnavailable(Exception):
 
 
 def _embed_session_from_path(jsonl_path: Path) -> bytes | None:
-    """jsonl 파일에서 첫 HEAD_TURNS_EMBED turn 추출 → BGE-M3 임베딩 → float32 bytes.
+    """jsonl 파일에서 첫 HEAD_TURNS_EMBED turn 추출 → 임베딩(Arctic-ko) → float32 bytes.
 
     SESSION_EMBED_CHARS는 한 turn에 거대 paste가 들어왔을 때 폭주 방지용 안전망.
-    memory_indexer.embed_text 재사용 (BGE-M3 서버 호출 + dim 검증).
+    memory_indexer.embed_text 재사용 (임베딩 서버(Arctic-ko) 호출 + dim 검증).
 
     Returns:
         bytes: 정상 임베딩.
@@ -364,7 +364,7 @@ def _embed_session_from_path(jsonl_path: Path) -> bytes | None:
     text = head_body[:SESSION_EMBED_CHARS].strip()
     if not text:
         return None
-    # 지연 import — sessions-only 인덱서가 BGE-M3 서버 없이도 동작하도록
+    # 지연 import — sessions-only 인덱서가 임베딩 서버 없이도 동작하도록
     from memory_indexer import embed_text, _vec_to_blob  # noqa: WPS433
     vec = embed_text(text)
     if vec is None:
@@ -513,7 +513,7 @@ def incremental_index(
 def backfill_session_vecs(db_path: Path = DB_PATH) -> dict[str, int]:
     """sessions에는 있는데 sessions_vec에는 없는 session_id를 일괄 임베딩.
 
-    Sprint 5 1회성 마이그레이션 + 향후 BGE-M3 다운 중 누락된 vec 복구용.
+    Sprint 5 1회성 마이그레이션 + 향후 임베딩 서버 다운 중 누락된 vec 복구용.
     반환: {"queued", "embedded", "failed"}.
     """
     counts = {"queued": 0, "embedded": 0, "failed": 0}

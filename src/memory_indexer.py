@@ -161,8 +161,19 @@ def _embed_cache_get(query: str, kind: str) -> list[float] | None:
         return None
     if not row:
         return None
-    arr = np.frombuffer(row[0], dtype=np.float32)
-    if arr.shape != (EMBED_DIM,):
+    # bug-audit 2026-06-02 (codex R2): 캐시 측 검증. (1) 비-4배수 손상 blob 은
+    # frombuffer ValueError 가 embed_text 의 try 블록 밖(cache lookup)에서 터져
+    # 호출자(indexer/recall) 크래시. (2) pre-existing NaN/Inf 캐시 행은 embed_text
+    # finiteness 가드(#1)가 cache 이후라 그대로 재서빙돼 memories_vec 로 전파.
+    # 손상·비유한·차원불일치는 None(cache miss) → 서버 재요청(가드된 경로)로 흘린다.
+    try:
+        arr = np.frombuffer(row[0], dtype=np.float32)
+    except (ValueError, TypeError):
+        # ValueError: 비-4배수 길이. TypeError: SQLite 는 컬럼 타입 strict 가 아니라
+        # vector 컬럼에 TEXT/str 값이 들어갈 수 있는데 frombuffer 는 bytes-like 만
+        # 받는다(non-buffer → TypeError). 둘 다 cache miss 로 흘려 서버 재요청.
+        return None
+    if arr.shape != (EMBED_DIM,) or not np.isfinite(arr).all():
         return None
     return arr.tolist()
 
@@ -222,6 +233,16 @@ def embed_text(text: str, kind: str = "passage") -> list[float] | None:
                 f"embed bad shape: type={type(vec).__name__} "
                 f"len={len(vec) if isinstance(vec, list) else '?'}"
             )
+            return None
+        # bug-audit 2026-06-02 (#1): NaN/Inf 벡터 거부. 임베딩 서버가 토큰
+        # 한도 초과 입력에 대해 크래시 대신 all-NaN 벡터를 200 으로 반환할 수
+        # 있는데(arctic_ko_server token-truncation 부재), NaN 은 json.dumps/loads
+        # 를 그대로 왕복하고 len==EMBED_DIM 도 통과해 embed_cache·memories_vec 에
+        # 영구 저장된다 → cosine 검색에서 sims=NaN 으로 해당 메모리 영구 미회수 +
+        # top-k 순위 오염. None 반환 시 embed_failed defer 경로(아래)가 재시도하게
+        # 둔다. (서버측 token truncation·500 가드는 arctic_ko_server.py 에서 별도 차단.)
+        if not np.isfinite(np.asarray(vec, dtype=np.float64)).all():
+            _debug(f"embed non-finite vector rejected (kind={kind}, len={len(vec)})")
             return None
         _embed_cache_put(text, kind, vec)
         return vec

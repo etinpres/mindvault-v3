@@ -402,19 +402,46 @@ def emit_output(summary: str) -> None:
     sys.stdout.flush()
 
 
+def _staged_base_memory_dir() -> Path:
+    """SessionEnd(session_memory_end._default_memory_dir)와 동일 우선순위로 memory
+    디렉토리 해석. bug-audit 2026-06-02 (#18): 이전 purge 는 PROJECTS_DIR/'memory'
+    만 봐 MV3_MEMORY_DIR override 를 무시 → SessionEnd 가 staged 를 쓰는 위치와
+    어긋나 엉뚱한(또는 없는) 디렉토리를 청소하고 실제 staged 는 영구 누적했다.
+    두 hook 이 같은 해석 규칙을 쓰도록 우선순위(MV3_MEMORY_DIR → MV3_PROJECTS_DIR/
+    memory → home_slug/memory)를 맞춘다."""
+    mem_override = os.environ.get("MV3_MEMORY_DIR", "").strip()
+    if mem_override:
+        return Path(mem_override).expanduser()
+    proj_override = os.environ.get("MV3_PROJECTS_DIR", "").strip()
+    if proj_override:
+        return Path(proj_override).expanduser() / "memory"
+    home_slug = "-" + str(Path.home()).strip("/").replace("/", "-")
+    return (
+        Path(os.environ.get("MV3_PROJECTS_ROOT", "~/.claude/projects")).expanduser()
+        / home_slug
+        / "memory"
+    )
+
+
 def purge_staged_memory() -> None:
-    """Sprint 3: memory/_staged/ 30일 경과 파일 청소."""
+    """Sprint 3: staged/ 30일 경과 파일 청소.
+
+    bug-audit 2026-06-02 (#17/#18): (a) SessionEnd 와 동일하게 MV3_MEMORY_DIR
+    override 를 honor 하고, (b) _staged 뿐 아니라 _procedural/_staged 도 청소한다
+    (Sprint 13 이 procedural 후보를 별도 슬롯으로 분리했으나 자동 TTL 청소가 이
+    슬롯을 건너뛰어 procedural staged 가 영구 누적됐다)."""
     try:
-        staged = PROJECTS_DIR / "memory" / "_staged"
-        if not staged.is_dir():
-            return
+        mem_dir = _staged_base_memory_dir()
         cutoff = time.time() - 30 * 86400
-        for f in staged.glob("*.md"):
-            try:
-                if f.stat().st_mtime < cutoff:
-                    f.unlink()
-            except OSError:
+        for staged in (mem_dir / "_staged", mem_dir / "_procedural" / "_staged"):
+            if not staged.is_dir():
                 continue
+            for f in staged.glob("*.md"):
+                try:
+                    if f.stat().st_mtime < cutoff:
+                        f.unlink()
+                except OSError:
+                    continue
     except Exception:
         pass
 
@@ -439,13 +466,16 @@ def trigger_background_indexer() -> None:
         _debug(f"indexer trigger failed: {e}")
 
 
-def trigger_bge_m3_warmup() -> None:
-    """Sprint 8: BGE-M3 서버에 dummy embed 요청을 백그라운드로 spawn.
+def trigger_arctic_warmup() -> None:
+    """임베딩 서버(Arctic-ko :8081)에 dummy embed 요청을 백그라운드로 spawn.
 
     launchd로 상주 중이라 모델은 메모리 상주지만, MLX forward 첫 호출 path가
     살짝 늦을 수 있음 (특히 다른 요청 처리 직후). SessionStart hook은 250ms
     제한 없는 컨텍스트라 여기서 warmup 보내두면, 직후 사용자의 첫 메시지에서
     memory-recall hook이 호출할 때 warm path 사용.
+
+    (Sprint 8 도입 시 임베딩 서버가 BGE-M3 였어 함수명이 trigger_bge_m3_warmup
+    이었으나 Sprint 9/14 Arctic-ko 교체 후 이름·문서 정정 — 2026-06-02.)
     """
     try:
         import subprocess
@@ -465,7 +495,7 @@ def trigger_bge_m3_warmup() -> None:
             start_new_session=True,
         )
     except Exception as e:
-        _debug(f"bge-m3 warmup spawn failed: {e}")
+        _debug(f"arctic warmup spawn failed: {e}")
 
 
 # --- compact 재주입 (SessionStart source=compact) ---------------------------
@@ -744,9 +774,9 @@ def main() -> int:
         except Exception:
             pass
         return 0
-    # Sprint 8: 가능한 일찍 BGE-M3 warmup spawn. 직후 사용자 첫 메시지의
-    # memory-recall hook(250ms 제한)이 warm path 활용하도록.
-    trigger_bge_m3_warmup()
+    # Sprint 8: 가능한 일찍 임베딩 서버(Arctic-ko) warmup spawn. 직후 사용자 첫
+    # 메시지의 memory-recall hook(250ms 제한)이 warm path 활용하도록.
+    trigger_arctic_warmup()
     try:
         # 수동 실행 편의: 환경변수로 세션 ID 지정 가능. Claude Code는 stdin JSON으로 전달.
         exclude = os.environ.get("CLAUDE_SESSION_ID")

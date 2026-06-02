@@ -881,6 +881,13 @@ fi
 # MV3_SKIP_GIT_WIRE=1 — 테스트 격리용 (실제 repo git config 비변경).
 if [ -d "$REPO_DIR/.git" ] && [ "${MV3_SKIP_GIT_WIRE:-0}" != "1" ]; then
   echo "$REPO_DIR" > "$INSTALL_MANIFEST_DIR/.repo-path"
+  # bug-audit 2026-06-02 (R3): 덮어쓰기 전에 사용자의 기존 core.hooksPath 를 기록 →
+  # uninstall 이 unset 이 아니라 복원할 수 있게 한다. 미기록 시 사용자가 install 전부터
+  # 쓰던 custom hooksPath 가 uninstall 후 영구 소실된다.
+  PRIOR_HP="$(git -C "$REPO_DIR" config --get core.hooksPath 2>/dev/null || true)"
+  if [ -n "$PRIOR_HP" ] && [ "$PRIOR_HP" != ".githooks" ]; then
+    printf '%s\n' "$PRIOR_HP" > "$INSTALL_MANIFEST_DIR/.prior-hookspath"
+  fi
   if git -C "$REPO_DIR" config core.hooksPath .githooks 2>/dev/null; then
     echo "✓ git hooks wired (core.hooksPath=.githooks — post-commit/post-merge 자동 sync)"
   else

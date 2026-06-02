@@ -273,6 +273,12 @@ def _extract_memory_meta(md_path: Path) -> tuple[str, str, str] | None:
         text = md_path.read_text(encoding="utf-8")
     except OSError:
         return None
+    # bug-audit 2026-06-02 (#13): 선두 UTF-8 BOM 관용. memory_indexer.parse_frontmatter
+    # (^﻿?---), memory_search._is_deprecated, reverify 는 모두 BOM 을 허용하는데
+    # alias_generator 만 startswith('---') 로 BOM 메모리를 거부해, BOM 파일(Obsidian/
+    # Windows 수기 편집)은 검색은 되나 alias 에서 영구 누락됐다. 진입 검사를 통일.
+    if text and text[0] == "﻿":
+        text = text[1:]
     if not text.startswith("---"):
         return None
     parts = text.split("---", 2)
@@ -328,6 +334,11 @@ def generate(
             existing = json.loads(INDEX_PATH.read_text())
         except (json.JSONDecodeError, OSError):
             existing = {}
+        # bug-audit 2026-06-02 (codex R2, #10 완성): 비-dict valid JSON(배열/문자열
+        # 등) 이면 아래 existing.keys()/existing[path_key]= 가 크래시 → SessionEnd
+        # alias_sync 영구 실패(자가복구 무력). load_alias_index 와 동일 정규화.
+        if not isinstance(existing, dict):
+            existing = {}
 
     targets: list[Path] = []
     # v3.2.6 H3: 매 호출마다 재발견 — 새 cwd 슬롯이 생기면 즉시 흡수.
@@ -376,9 +387,35 @@ def generate(
     t0 = time.time()
     for i, md in enumerate(targets):
         path_key = str(md)
+        try:
+            cur_mtime_ns = md.stat().st_mtime_ns
+        except OSError:
+            cur_mtime_ns = None
+        # bug-audit 2026-06-02 (#12): mtime 기반 incremental. 이전엔 path 존재만
+        # 보고 skip 해, sprint 마다 재작성되는 상태 메모리(phase*-status 등)의 alias
+        # 가 --force 없이는 영구 stale 였다(indexer 는 mtime_ns 로 재임베딩하는데
+        # alias 만 미추적 — 비대칭). 내용이 바뀌면(mtime 변경) 재생성한다.
         if path_key in existing and not force:
-            stats["skipped"] += 1
-            continue
+            entry = existing[path_key]
+            # codex R2: 비-dict 손상 엔트리(예: `{".../x.md": []}`)면 .get 이
+            # AttributeError → 재생성 경로로 흘려 자연 교정.
+            if not isinstance(entry, dict):
+                pass  # fall through → 재생성 (손상 엔트리 교정)
+            else:
+                stored_mtime = entry.get("mtime_ns")
+                if stored_mtime is None:
+                    # legacy 엔트리(mtime 미기록): 첫 배포 thundering herd 회피 위해
+                    # 재생성 없이 현재 mtime 만 backfill 하고 skip. (pre-deploy 윈도우에
+                    # 편집된 메모리의 alias 는 다음 편집 때 갱신되는 minor 한계 — codex R2.
+                    # alias 는 vec/FTS 보조 신호라 영향 작아 전건 재생성 비용 대비 수용.)
+                    if cur_mtime_ns is not None:
+                        entry["mtime_ns"] = cur_mtime_ns
+                    stats["skipped"] += 1
+                    continue
+                if cur_mtime_ns is not None and stored_mtime == cur_mtime_ns:
+                    stats["skipped"] += 1
+                    continue
+                # else: mtime 변경 → 아래로 떨어져 재생성
         meta = _extract_memory_meta(md)
         if meta is None:
             stats["failed"] += 1
@@ -401,6 +438,7 @@ def generate(
             "aliases": aliases,
             "provider": provider,
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "mtime_ns": cur_mtime_ns,
         }
         stats["generated"] += 1
         # 매 10건마다 중간 저장 — 도중 실패해도 진행 보존
@@ -443,9 +481,11 @@ def load_alias_index() -> dict:
     if not INDEX_PATH.exists():
         return {}
     try:
-        return json.loads(INDEX_PATH.read_text())
+        data = json.loads(INDEX_PATH.read_text())
     except (json.JSONDecodeError, OSError):
         return {}
+    # bug-audit 2026-06-02 (#10): 비-dict valid JSON 방어 (외부 손상/수기 편집).
+    return data if isinstance(data, dict) else {}
 
 
 def main() -> int:

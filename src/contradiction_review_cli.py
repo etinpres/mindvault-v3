@@ -223,6 +223,12 @@ def _can_patch_frontmatter_list(p: Path, key: str) -> bool:
         return False
     if _BLOCK_LIST_RE(key).search(fm) or _SCALAR_VALUE_RE(key).search(fm):
         return False
+    # bug-audit 2026-06-02 (#20): 키가 이미 존재하지만 정상 flow-list([a, b])로
+    # 인식되지 않으면(예: 미닫힌 'key: [a, b') mutate 거부 — 그대로 두면 else 분기가
+    # 중복 키를 append 해 last-key-wins YAML 손상. block/scalar 가드의 빈틈을 닫는다.
+    _flow_re = re.compile(rf"^{re.escape(key)}:\s*\[(.*?)\]\s*$", re.MULTILINE)
+    if re.search(rf"^{re.escape(key)}:", fm, re.MULTILINE) and not _flow_re.search(fm):
+        return False
     return True
 
 
@@ -259,6 +265,12 @@ def _patch_frontmatter_list(p: Path, key: str, value: str) -> bool:
         new_line = f"{key}: [{', '.join(items)}]"
         fm = line_re.sub(new_line, fm)
     else:
+        # bug-audit 2026-06-02 (#20): 키가 이미 존재하나 정상 flow-list 가 아니면
+        # (미닫힌 'key: [a, b' 등) 중복 키 append 대신 거부 — block/scalar 가드와
+        # 동일 정책. 이미 깨진 YAML 을 더 손상시키지 않는다.
+        if re.search(rf"^{re.escape(key)}:", fm, re.MULTILINE):
+            _log_refuse_mutate(p, key, "malformed-non-flow-list")
+            return False
         fm = fm.rstrip() + f"\n{key}: [{value}]"
 
     # Atomic write: tmp + os.replace (pid-suffixed tmp avoids concurrent races).

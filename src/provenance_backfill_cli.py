@@ -91,7 +91,11 @@ def backfill_file(path: Path, dry_run: bool) -> bool:
         st, ref = "unknown", ""
 
     inject = [f"source_type: {st}"]
-    if ref:
+    # bug-audit 2026-06-02 (#25): source_ref 가 이미 있으면 재주입 금지. 가드가
+    # source_type 부재만 보므로, source_ref 만 있고 source_type 없는 파일(중단된
+    # 과거 backfill·수기 편집·구버전 import)에 source_ref 가 2번 들어가 YAML
+    # last-key-wins 로 원본 출처가 silent 덮어쓰였다. 기존 ref 는 보존한다.
+    if ref and not _has(fm, "source_ref"):
         inject.append(f"source_ref: {_safe_scalar(ref)}")
     new = lines[:close] + inject + lines[close:]
     out = "\n".join(new)

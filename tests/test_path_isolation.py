@@ -129,8 +129,8 @@ def test_src_modules_honor_projects_root_env():
 
 def test_discover_memory_dirs_honors_env_var():
     """v3.2.7 codex Cat 7 — _discover_memory_dirs 가 module-level hardcoded
-    가 아닌 env var 를 참조해야 함. memory_indexer / memory-recall hook /
-    eval_arctic_ko_ab 모두 동일 패턴."""
+    가 아닌 env var 를 참조해야 함. memory_indexer / memory-recall hook
+    동일 패턴."""
     expected_projects = Path(os.environ["MV3_PROJECTS_ROOT"])
 
     mi = _load_worktree_module("memory_indexer")
@@ -145,11 +145,7 @@ def test_discover_memory_dirs_honors_env_var():
         assert str(d).startswith(str(expected_projects)), (
             f"memory_indexer._discover_memory_dirs() returned {d} outside MV3_PROJECTS_ROOT"
         )
-
-    # eval_arctic_ko_ab 도 같은 검증
-    eaa = _load_worktree_module("eval_arctic_ko_ab")
-    for d in eaa._discover_memory_dirs():
-        assert str(d).startswith(str(expected_projects))
+    # (bge_m3 정리 2026-06-02: eval_arctic_ko_ab.py 삭제 — 같은 검증 블록 제거.)
 
 
 def test_scripts_dir_env_var_used_in_bootstrap_fallback():

@@ -4,14 +4,15 @@
 POST /embed {"input": str, "kind": "query"|"passage"}  → {"vector": [1024 floats]}
 GET  /health                                            → {"ok": true, "model": "arctic-ko-mlx-4bit"}
 
-Sprint 9: BGE-M3(port 8081) A/B 후보. Snowflake Arctic Embed L v2.0의 한국어
-fine-tune. CLS pooling + "query: " prefix + L2 normalize 적용 (BGE-M3와 다름).
+Sprint 9 도입(:8081 임베딩 서버). Snowflake Arctic Embed L v2.0의 한국어
+fine-tune. CLS pooling + "query: " prefix + L2 normalize 적용.
 mlx_embeddings 패키지로 XLM-RoBERTa 4bit 양자화본을 메모리 상주시킨다.
 """
 from __future__ import annotations
 
 import json
 import logging
+import math
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,7 +26,13 @@ MODEL_LABEL = "arctic-ko-mlx-4bit"
 HOST = "127.0.0.1"
 PORT = 8081
 EMBED_DIM = 1024
-MAX_INPUT_CHARS = 32_000  # 8192 토큰 cap의 안전 마진
+MAX_INPUT_CHARS = 32_000  # 토큰화 전 1차 char cap (cheap pre-filter)
+# bug-audit 2026-06-02 (#1): 토큰 단위 truncation. XLM-RoBERTa 의
+# max_position_embeddings=8194 / model_max_length=8192 를 넘는 토큰열을 forward 에
+# 넣으면 크래시가 아니라 position embedding 범위 초과로 all-NaN 벡터가 나온다.
+# 이전엔 char cap(32000)만 있어 한국어 장문(~2토큰/자)은 13000~16000 토큰까지
+# 통과 → NaN. CLS 가 index 0 이라 앞에서 자르면 CLS 보존 + 유효 벡터 보장.
+MAX_TOKENS = 8192
 QUERY_PREFIX = "query: "  # config_sentence_transformers.json 명시
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -53,6 +60,10 @@ def embed(text: str, kind: str = "passage") -> list[float]:
         text = QUERY_PREFIX + text
     with _model_lock:
         tokens = _tokenizer.encode(text)
+        # 토큰 한도 초과 → all-NaN 벡터 방지 (위 MAX_TOKENS 주석 참조). CLS(index 0)
+        # 가 보존되도록 앞에서부터 MAX_TOKENS 까지만 사용.
+        if len(tokens) > MAX_TOKENS:
+            tokens = tokens[:MAX_TOKENS]
         input_ids = mx.array([tokens])
         output = _model(input_ids)
         # CLS token pooling (1_Pooling/config.json: pooling_mode_cls_token=true)
@@ -102,6 +113,12 @@ class Handler(BaseHTTPRequestHandler):
             vector = embed(text, kind=kind)
             if len(vector) != EMBED_DIM:
                 raise RuntimeError(f"bad embed dim: {len(vector)}")
+            # bug-audit 2026-06-02 (#1): NaN/Inf 벡터가 200 으로 새 나가는 것을
+            # 차단. token truncation 으로 1차 방지하지만, 만일의 비유한 출력은
+            # 500 으로 거부해 클라이언트가 defer(재시도)하게 한다. len 가드만으론
+            # NaN 을 못 잡는다(길이는 정상).
+            if not all(math.isfinite(x) for x in vector):
+                raise RuntimeError("non-finite embedding (NaN/Inf)")
             self._send_json(200, {"vector": vector})
         except Exception as exc:
             log.exception("embed fail")

@@ -377,16 +377,73 @@ def _iter_balanced_arrays(text: str):
             if isinstance(val, list):
                 yield val
         except json.JSONDecodeError:
-            pass
+            # bug-audit 2026-06-02 (R4): 산문 머리말 + 끝쉼표 조합이면 여기 span 이
+            # 끝쉼표로 파싱 실패해 yield 안 돼 유효 후보가 유실됐다(끝쉼표 복구가
+            # whole-string/fence 경로에만 배선됨). string-aware 복구 후 1회 재시도 —
+            # 스캐너가 문자열 내부 쉼표를 보존하므로 산문 안 가짜 후보 날조 위험 없음.
+            try:
+                val = json.loads(_strip_trailing_commas(text[i:end + 1]))
+                if isinstance(val, list):
+                    yield val
+            except json.JSONDecodeError:
+                pass
         i = end + 1
 
 
-def parse_gemma_json(out: str) -> list[dict]:
+def _strip_trailing_commas(s: str) -> str:
+    """문자열 리터럴 *밖*의 끝쉼표(다음 비공백이 ] 또는 })만 제거.
+
+    bug-audit 2026-06-02 (codex R2): 이전 blind `re.sub(r",(\\s*[}\\]])", ...)` 는
+    JSON 구조를 몰라 body/title 문자열 값 안의 ', ]' / ', }'(예: 한국어 procedural
+    body '순서는 [빌드, 테스트, 배포,] 로 한다')의 쉼표까지 삭제해 저장 콘텐츠를
+    무음 손상시켰다. in_str/esc 상태기로 문자열 내부 쉼표는 보존하고 구조적 끝쉼표만
+    제거한다 (_iter_balanced_arrays 의 스캐너와 동일 원리).
+    """
+    out_chars: list[str] = []
+    in_str = esc = False
+    n = len(s)
+    for idx, c in enumerate(s):
+        if in_str:
+            out_chars.append(c)
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+            out_chars.append(c)
+            continue
+        if c == ",":
+            k = idx + 1
+            while k < n and s[k] in " \t\r\n":
+                k += 1
+            if k < n and s[k] in "]}":
+                continue  # 구조적 끝쉼표 → drop (뒤따르는 공백·괄호는 그대로 유지)
+        out_chars.append(c)
+    return "".join(out_chars)
+
+
+def _parse_gemma_json_ex(out: str) -> tuple[list[dict], bool]:
+    """Gemma 응답 파싱 → (valid_candidates, parse_failed).
+
+    bug-audit 2026-06-02 (#5): 이전 parse_gemma_json 은 '진짜 빈 배열'과 '파싱
+    실패'를 둘 다 [] 로 반환해 호출자가 구분 못 했다. 그래서 흔한 LLM JSON 결함
+    (끝쉼표 등)으로 유효 후보가 담긴 응답이 [] 로 처리되고 negative cache 에
+    영구 저장돼 그 세션의 기억 후보가 영영 유실됐다(MindVault 핵심 목적 훼손).
+    이제 (a) 끝쉼표를 관대하게 복구해 가장 흔한 결함을 살리고, (b) 비-empty
+    응답에서 유효 배열을 못 뽑으면 parse_failed=True 를 돌려 호출자가
+    negative-cache 를 건너뛰게 한다.
+    """
     if not out:
-        return []
+        return [], False
     arr = None
     # 1순위: 코드펜스만 벗긴 뒤 직접 파싱 (모델이 JSON 만 낸 정상 케이스).
     stripped = out.strip()
+    if not stripped:
+        return [], False
     fence = re.match(r"^```(?:json)?\s*([\s\S]*?)\s*```$", stripped)
     if fence:
         stripped = fence.group(1).strip()
@@ -396,6 +453,17 @@ def parse_gemma_json(out: str) -> list[dict]:
             arr = cand
     except json.JSONDecodeError:
         arr = None
+    # 1.5순위: 끝쉼표(`[{...},]`/`{...,}`) 관대 복구 후 재파싱 — 가장 흔한 LLM 결함.
+    # string-aware 제거(문자열 값 내부 쉼표 보존) — codex R2 손상 회귀 차단.
+    if arr is None:
+        repaired = _strip_trailing_commas(stripped)
+        if repaired != stripped:
+            try:
+                cand = json.loads(repaired)
+                if isinstance(cand, list):
+                    arr = cand
+            except json.JSONDecodeError:
+                arr = None
     # 2순위: 산문이 섞였으면 balanced [...] 후보 중 dict 를 담은 list 우선 선택.
     if arr is None:
         for cand in _iter_balanced_arrays(out):
@@ -405,8 +473,9 @@ def parse_gemma_json(out: str) -> list[dict]:
             if arr is None:
                 arr = cand  # dict 없는 list 라도 첫 후보 보관 (대개 [])
     if not isinstance(arr, list):
+        # 비-empty 응답인데 유효 배열을 못 뽑음 = malformed → parse_failed.
         _debug("json parse fail: no balanced array")
-        return []
+        return [], True
     valid = []
     for item in arr:
         if not isinstance(item, dict):
@@ -425,7 +494,11 @@ def parse_gemma_json(out: str) -> list[dict]:
                 "evidence": (item.get("evidence") or "").strip()[:60],
             }
         )
-    return valid
+    return valid, False
+
+
+def parse_gemma_json(out: str) -> list[dict]:
+    return _parse_gemma_json_ex(out)[0]
 
 
 def _retries() -> int:
@@ -508,13 +581,19 @@ def extract_from_jsonl(jsonl_path: Path) -> list[dict]:
         attempts = 1 + _retries()
         results: list[list[dict]] = []
         any_call_failed = False  # bug-audit 2026-05-29 (extractor-negcache-1)
+        any_parse_failed = False  # bug-audit 2026-06-02 (#5)
         for i in range(attempts):
             out = call_gemma(prompt)
             if out is None:
                 # 전송 실패/빈 응답 (서버 다운·timeout·finish_reason=length). legit
                 # "후보 없음" 은 Gemma 가 "[]" 를 반환하므로 None 과 구분된다.
                 any_call_failed = True
-            parsed = parse_gemma_json(out) if out else []
+            if out:
+                parsed, parse_failed = _parse_gemma_json_ex(out)
+                if parse_failed:
+                    any_parse_failed = True
+            else:
+                parsed = []
             results.append(parsed)
             if parsed:
                 _debug(
@@ -540,14 +619,19 @@ def extract_from_jsonl(jsonl_path: Path) -> list[dict]:
         # 빈 결과(서버 다운)는 캐시하지 않는다 — 캐시하면 서버 복구 후에도 같은 세션이
         # 영구히 추출 스킵돼 데이터가 유실된다. "서버가 응답했으나 후보 0건"(out="[]")
         # 은 정상 빈 결과라 그대로 캐시한다.
-        skip_negative_cache = any_call_failed and not merged
+        # bug-audit 2026-06-02 (#5): malformed-but-present 응답(파싱 실패)도
+        # negative-cache 회피 — 캐시하면 그 세션 후보가 영구 유실된다.
+        skip_negative_cache = (any_call_failed or any_parse_failed) and not merged
         if cache_put is not None and not skip_negative_cache:
             try:
                 cache_put(prompt, merged)
             except Exception as e:
                 _debug(f"cache_put fail (graceful): {type(e).__name__}: {e}")
         elif skip_negative_cache:
-            _debug(f"skip caching empty result (gemma call failed) for {jsonl_path.name}")
+            _debug(
+                f"skip caching empty result (gemma call failed={any_call_failed} "
+                f"parse failed={any_parse_failed}) for {jsonl_path.name}"
+            )
         return merged
     except Exception as e:
         _debug(f"extract FATAL: {e}\n{traceback.format_exc()}")

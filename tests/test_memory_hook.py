@@ -177,7 +177,7 @@ class TestMtimeThrottle(unittest.TestCase):
     "MV3_SKIP_INTEGRATION=1",
 )
 class TestHookNormalFlow(unittest.TestCase):
-    """실 BGE-M3 + ~/.claude/mindvault-v3/index.db 의존."""
+    """실 임베딩 서버(Arctic-ko) + ~/.claude/mindvault-v3/index.db 의존."""
 
     def test_real_query_format(self):
         r = subprocess.run(

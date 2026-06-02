@@ -47,7 +47,12 @@ def scan_missing(last_hours: float | None = None) -> list[tuple[datetime, str]]:
             m = MISSING_RE.match(line.rstrip())
             if not m:
                 continue
-            ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+            # bug-audit 2026-06-02 (#24): 정규식(\d{2})은 달력상 불가능한 타임스탬프도
+            # 매칭 → strptime ValueError 로 전체 스캔 중단. 손상 라인만 skip.
+            try:
+                ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
             if cutoff and ts < cutoff:
                 continue
             events.append((ts, m.group(2)))

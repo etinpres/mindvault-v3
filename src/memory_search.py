@@ -2,7 +2,7 @@
 """MindVault v3 Sprint 4 — hybrid RRF memory 검색.
 
 알고리즘:
-1. 쿼리 임베딩 (BGE-M3)
+1. 쿼리 임베딩 (Arctic-ko)
 2. FTS5 BM25 top-10 (body) + Vec cosine top-10 (BLOB float32, numpy)
 3. RRF 결합: score = Σ (가중 적용된 1/(60+rank)) — description 1.5x
 4. min-max 정규화 (배치 내 독립) → score_threshold 게이트 → top_k
@@ -175,6 +175,12 @@ def _load_alias_index() -> dict:
         _ALIAS_INDEX_MTIME = mt
     except (json.JSONDecodeError, OSError):
         _ALIAS_INDEX_CACHE = {}
+    # bug-audit 2026-06-02 (#10): 비-dict valid JSON(배열/문자열/숫자)이 캐시에
+    # 박히면 _alias_boost_paths 의 idx.items() 가 AttributeError → recall_memory
+    # broad except → 모든 query recall 0건(mtime 캐시라 파일 고칠 때까지 지속).
+    # 정상 운영에선 _save 가 항상 dict 를 쓰므로 외부 손상/수기 편집 방어.
+    if not isinstance(_ALIAS_INDEX_CACHE, dict):
+        _ALIAS_INDEX_CACHE = {}
     return _ALIAS_INDEX_CACHE
 
 
@@ -197,7 +203,20 @@ def _alias_boost_paths(query: str) -> set[str]:
         return set()
     matched: set[str] = set()
     for path, info in idx.items():
-        for alias in info.get("aliases", []):
+        # bug-audit 2026-06-02 (codex R2): per-entry 값이 비-dict(예: 손상 index
+        # `{".../x.md": []}`)면 info.get 이, alias 가 비-str(예: 42)면 alias.lower()
+        # 가 AttributeError → recall 전체가 broad except 로 0건. 타입 가드로 방어.
+        if not isinstance(info, dict):
+            continue
+        # bug-audit 2026-06-02 (R5 codex): aliases 가 비-iterable(예: {"aliases":42})
+        # 면 `for alias in 42` 가 TypeError → recall 전체 broad except 로 0건. 컨테이너
+        # 타입도 검증(element isinstance 가드는 `for` 진입 자체를 못 막는다).
+        _aliases = info.get("aliases", [])
+        if not isinstance(_aliases, list):
+            continue
+        for alias in _aliases:
+            if not isinstance(alias, str):
+                continue
             a_lower = alias.lower()
             a_tokens = {
                 t for t in re.findall(r"[가-힣A-Za-z0-9]+", a_lower)
@@ -294,9 +313,23 @@ def _vec_top_k(
         if not emb:
             # NEXT-28 sentinel — 빈 bytes 는 의도된 무한-재시도 차단. silent.
             continue
-        arr = np.frombuffer(emb, dtype=np.float32)
+        # bug-audit 2026-06-02 (#8): 4의 배수가 아닌 손상 blob 은 frombuffer 가
+        # shape 가드 도달 전 ValueError → recall 전체(vec+이미 구한 fts)를 0건으로
+        # 만든다. 손상 행만 skip (search.py:vec_candidates 와 parity).
+        try:
+            arr = np.frombuffer(emb, dtype=np.float32)
+        except ValueError:
+            _debug(f"skip corrupt vec bytes len={len(emb)} path={r['path']}")
+            continue
         if arr.shape != (EMBED_DIM,):
             _debug(f"skip bad vec dim {arr.shape} path={r['path']}")
+            continue
+        # bug-audit 2026-06-02 (codex R2): pre-existing NaN/Inf 행(길이·차원은
+        # 정상이나 값이 비유한)은 cosine 을 NaN 으로 만들어 argsort 순위를 오염하고
+        # raw 게이트(raw < threshold)를 NaN 비교로 우회한다. embed_text 가드(#1)는
+        # 신규 저장만 막으므로 읽기 측에서도 비유한 행을 skip.
+        if not np.isfinite(arr).all():
+            _debug(f"skip non-finite vec path={r['path']}")
             continue
         mat[valid] = arr
         meta.append((r["path"], r["kind"]))
@@ -525,7 +558,7 @@ def recall_memory(
     """hybrid RRF + raw vec cosine 게이트 memory 검색.
 
     raw_cosine_min: vec top-1의 raw cosine이 이 값 미만이면 결과 0건.
-                    V1 토큰 낭비 회피 (BGE-M3는 잡담에도 0.6-0.75 매칭 → 0.78+ 만 통과).
+                    V1 토큰 낭비 회피 (임베딩이 잡담에도 어느 정도 매칭하므로 raw cosine 게이트로 차단).
     반환: [{"path","name","description","snippet","score","raw_cosine","source","provenance"}, ...]
     """
     if db_path is None:
@@ -571,7 +604,30 @@ def recall_memory(
             return []
 
         top1_raw = max(raw_cosine_map.values()) if raw_cosine_map else 0.0
+        # bug-audit 2026-06-02 (codex R2): vec_available 는 alias sentinel 이
+        # raw_cosine_map 을 채우기 *전*에 캡처해야 한다. 아래 alias 합류 loop 이
+        # raw_cosine_map[bp]=0.35 를 넣으므로, 그 뒤 bool(raw_cosine_map) 로 재면
+        # vec 서버 다운(qvec=None → raw_cosine_map 비어있음)인데도 True 가 되어
+        # fts-only fallback 의 게이트 면제가 무력화된다(사용자 키워드 메모리가 약한
+        # alias 매칭으로 대체). vec 의 실제 성공 여부만 반영.
+        vec_available = bool(raw_cosine_map)
         combined = rrf_combine(vec_rows, fts_rows, k=RRF_K)
+
+        # bug-audit 2026-06-02 (#11): stale alias_index 의 path(메모리가 _staged 로
+        # 이동/삭제됐는데 alias --sync 가 아직 안 돈 비원자 윈도우)는 memories 테이블에
+        # row 가 없어, 합류 시 빈 name/description/snippet 의 'ghost' 결과(score 1.0)를
+        # 정상 메모리보다 위로 주입하고 path 를 노출한다. memories 에 실재하는 path 만
+        # alias 후보로 인정해 ghost 를 원천 차단.
+        if alias_paths:
+            _ap = list(alias_paths)
+            _ph = ",".join("?" * len(_ap))
+            _existing = {
+                row["path"]
+                for row in conn.execute(
+                    f"SELECT path FROM memories WHERE path IN ({_ph})", _ap
+                )
+            }
+            alias_paths = {p for p in _ap if p in _existing}
 
         # alias fallback 합류 — 신규 path 추가 + 이미 후보인 path 의 raw 도
         # 게이트 통과 보장. setdefault 만으로는 vec raw 0.30 정도의 약 매칭이
@@ -613,10 +669,16 @@ def recall_memory(
         # user-english-teacher raw 0.223, "이거 뭐였지"→scan-natural-language
         # raw 0.197 통과 회귀). 0.5 → 0.8 로 좁힘.
         # vec 임베딩이 아예 실패(서버 다운)했으면 게이트 면제 — fts-only fallback 허용.
-        vec_available = bool(raw_cosine_map)
+        # vec_available 은 위(alias 합류 전)에서 캡처됨 — alias sentinel 오염 차단.
         kept = []
         for path, info in combined.items():
             raw = raw_cosine_map.get(path, 0.0)
+            # bug-audit 2026-06-02 (#3 검토): alias 매칭 procedural 메모리가 약한
+            # vec hit + no-hint 시 procedural 게이트(0.37)에서 sentinel(0.35)로 탈락하는
+            # 경계 케이스가 있으나, alias 게이트 전면 면제는 단일 공통토큰("수정" 등)
+            # 매칭으로 무관 메모리를 주입하는 회귀(codex R2)를 일으켜 revert. 해당
+            # 경계는 회수단서어 hint 경로(raw_min 0.27 → 게이트 0.32, sentinel 0.35
+            # 통과)로 회복되는 minor 한계로 둔다(FP=0 원칙 우선).
             if raw_cosine_min > 0 and vec_available:
                 # Sprint NEXT-4: type 별 게이트 — procedural 은 +0.05 엄격.
                 # specific keyword 매칭 강도가 일반 결정 메모리보다 필요한 영역.

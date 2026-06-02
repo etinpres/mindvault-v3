@@ -97,7 +97,13 @@ def parse_debug(last_hours: float | None) -> dict:
             m = TS_RE.match(line.rstrip())
             if not m:
                 continue
-            ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+            # bug-audit 2026-06-02 (#24): TS_RE 는 \d{2} 만 봐 달력상 불가능한
+            # 타임스탬프('2026-13-45 99:99:99')도 매칭한다. strptime 이 미가드면
+            # ValueError 로 parse_debug 전체가 죽어 부분 결과도 못 낸다. 손상 라인만 skip.
+            try:
+                ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
             if cutoff and ts < cutoff:
                 continue
             body = m.group(2)
@@ -106,8 +112,12 @@ def parse_debug(last_hours: float | None) -> dict:
                 trigger_layers[mt.group(1)] += 1
                 counts["trigger_fired"] += 1
             elif NO_TRIGGER_RE.match(body):
+                # bug-audit 2026-06-02 (#23): no_trigger 는 SessionEnd 의 extractor
+                # 서브이벤트일 뿐, 같은 SessionEnd 가 뒤이어 'no candidates' 종결
+                # 라인도 남긴다. 여기서 session_end_total 을 올리면 한 SessionEnd 가
+                # 2로 집계돼 분모(ship 결정 지표)가 부풀고 파생 비율이 왜곡된다.
+                # 종결 라인(no_candidates/staged/jsonl_missing)만 분모에 포함.
                 counts["no_trigger"] += 1
-                session_end_total += 1
             elif ALWAYS_FIRE_RE.match(body):
                 trigger_layers["always-fire"] += 1
                 counts["always_fire_bypass"] += 1

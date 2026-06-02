@@ -159,7 +159,11 @@ def write_staged(
     # crash 직전 write_text 가 절반만 flush 되면 다음 /memory_review 가
     # broken frontmatter parse 에 실패. alias_generator 의 동일 패턴 따름.
     # v3.2.8: finally — KeyboardInterrupt 도 tmp orphan 차단.
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    # bug-audit 2026-06-02 (#6): PID-고유 tmp. 고정 ".tmp" 는 동시 same-slug
+    # SessionEnd(sibling Conductor workspaces)에서 한 프로세스의 finally tmp.unlink
+    # 가 다른 프로세스의 tmp 를 지워 os.replace FileNotFoundError → 후보 lost update.
+    # reverify.py / alias_generator.py / contradiction_review_cli.py 와 동일 패턴.
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         try:
             tmp_path.write_text(frontmatter, encoding="utf-8")

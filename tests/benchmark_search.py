@@ -1,6 +1,6 @@
 """Sprint 4 성능 벤치마크. usage: python3 tests/benchmark_search.py
 
-BGE-M3 서버 + production index.db (~100 memories) 기동 상태 가정.
+임베딩 서버(Arctic-ko) + production index.db (~100 memories) 기동 상태 가정.
 """
 import json
 import statistics

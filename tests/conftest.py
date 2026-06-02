@@ -50,7 +50,7 @@ _MV3_MODULES = (
     "memory_extractor", "memory_compiler", "memory_review_cli",
     "extractor_cache", "extractor_stats_cli", "query_intent", "turns_cache",
     "backfill_cli", "dedup_cli", "alias_generator", "sources_cli",
-    "eval_top3_domain", "eval_arctic_ko_ab", "self_eval", "search",
+    "eval_top3_domain", "self_eval", "search",
     "indexer", "recall_cli", "compiler_benchmark",
     "memory-recall", "session-memory-end", "session-memory",
 )

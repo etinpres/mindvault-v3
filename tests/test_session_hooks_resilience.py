@@ -21,7 +21,7 @@ class TestSubagentGate(unittest.TestCase):
     def test_subagent_start_skips_summary(self):
         import session_memory as sm
         payload = json.dumps({"session_id": "abc12345", "agent_type": "Explore"})
-        with patch.object(sm, "trigger_bge_m3_warmup"), \
+        with patch.object(sm, "trigger_arctic_warmup"), \
              patch.object(sm, "get_recent_sessions") as grs, \
              patch.object(sm, "call_gemma") as cg, \
              patch.object(sm.sys, "stdin", io.StringIO(payload)):
@@ -34,7 +34,7 @@ class TestSubagentGate(unittest.TestCase):
         """agent_type 없는 일반 SessionStart 는 게이트를 통과해 get_recent_sessions 도달."""
         import session_memory as sm
         payload = json.dumps({"session_id": "abc12345"})
-        with patch.object(sm, "trigger_bge_m3_warmup"), \
+        with patch.object(sm, "trigger_arctic_warmup"), \
              patch.object(sm, "get_recent_sessions", return_value=[]) as grs, \
              patch.object(sm, "call_gemma") as cg, \
              patch.object(sm.sys, "stdin", io.StringIO(payload)):

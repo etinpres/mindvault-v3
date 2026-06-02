@@ -2,7 +2,7 @@
 """MindVault v3 Sprint 2 → Sprint 5 — sessions hybrid 검색.
 
 Sprint 5 변경:
-- FTS5 단독 → FTS5 + BGE-M3 vec hybrid (RRF 결합).
+- FTS5 단독 → FTS5 + Arctic-ko vec hybrid (RRF 결합).
 - raw cosine 절대 게이트 (DEFAULT_RAW_COSINE_MIN) 도입 → V1 토큰 낭비 패턴 회피.
 - Gemma rerank/summarize는 게이트 통과 candidates에만 적용 (Gemma 호출량 절감).
 - 회수 단서어 감지 시 게이트 완화 (RAW_COSINE_MIN_RELAXED).
@@ -171,9 +171,21 @@ def vec_candidates(
         # 의도된 빈 row 이므로 silent skip, log noise 제거.
         if not emb:
             continue
-        arr = np.frombuffer(emb, dtype=np.float32)
+        # bug-audit 2026-06-02 (#4): 4의 배수가 아닌 손상 blob 은 frombuffer 가
+        # shape 가드 도달 전에 ValueError 를 던져 recall 전체를 0건으로 만든다.
+        # 손상 행만 skip 하고 나머지로 검색 지속 (NEXT-36 row-resilience 의도 일관).
+        try:
+            arr = np.frombuffer(emb, dtype=np.float32)
+        except ValueError:
+            _debug(f"skip corrupt vec bytes len={len(emb)} sid={r['session_id']}")
+            continue
         if arr.shape != (EMBED_DIM,):
             _debug(f"skip bad vec dim {arr.shape} sid={r['session_id']}")
+            continue
+        # bug-audit 2026-06-02 (codex R2): 비유한(NaN/Inf) 행은 cosine 순위 오염 +
+        # raw 게이트 NaN-비교 우회. 읽기 측에서 skip (embed_text 가드는 신규 저장만 차단).
+        if not np.isfinite(arr).all():
+            _debug(f"skip non-finite vec sid={r['session_id']}")
             continue
         mat[valid] = arr
         sids.append(r["session_id"])
@@ -182,6 +194,11 @@ def vec_candidates(
         return [], {}
     mat = mat[:valid]
     q = np.asarray(qvec, dtype=np.float32)
+    # bug-audit 2026-06-02 (codex R2): 비유한(NaN/Inf) 쿼리 벡터는 sims 를 NaN 으로
+    # 만들어 raw-cosine 게이트(raw < threshold)를 NaN-비교로 우회한다. embed_text
+    # finiteness 가드(#1)가 1차 차단하지만 호출자 경로 방어(defense-in-depth).
+    if not np.isfinite(q).all():
+        return [], {}
     q_norm = np.linalg.norm(q)
     if q_norm == 0:
         return [], {}
@@ -189,7 +206,7 @@ def vec_candidates(
     norms = np.linalg.norm(mat, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     mat_norm = mat / norms
-    sims = mat_norm @ q  # (N,) raw cosine [-1..1] (BGE-M3는 보통 0..1)
+    sims = mat_norm @ q  # (N,) raw cosine [-1..1] (Arctic-ko는 보통 0..1)
     idx_sorted = np.argsort(-sims)[:limit]
     picked_sids = [sids[i] for i in idx_sorted]
     raw_map = {sids[i]: float(sims[i]) for i in idx_sorted}

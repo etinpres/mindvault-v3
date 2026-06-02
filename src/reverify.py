@@ -381,4 +381,42 @@ def maybe_scan_due(mem_dir: Path, interval_days: int = REVERIFY_INTERVAL_DAYS) -
     now = time.time()
     if last is not None and 0 <= (now - last) < interval_days * 86400:
         return None
-    return scan_memories(mem_dir)
+    # bug-audit 2026-06-02 (#26): 동시 SessionEnd(sibling Conductor workspaces)가
+    # 같은 stale sidecar 를 읽고 모두 due 판정 → 전체 메모리 재검증 스캔이 프로세스
+    # 수만큼 중복 실행(데이터 손상은 아니나 CPU/IO + os.replace churn 낭비). flock
+    # (LOCK_NB)로 한 프로세스만 스캔하도록 직렬화 — memory_indexer 의 동일 패턴.
+    # 락 실패 = 다른 프로세스가 이미 스캔 중 → 즉시 skip(None). 락 획득 후 sidecar
+    # 재확인으로, 막 끝난 직후 진입한 프로세스는 중복 스캔 대신 skip.
+    import errno  # noqa: WPS433
+    import fcntl  # noqa: WPS433  POSIX (macOS)
+    lock_path = _sidecar_path().with_suffix(".lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError:
+        # 락 파일조차 못 열면 직렬화는 포기하고 단독 진행(기존 동작 보존).
+        return scan_memories(mem_dir)
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as e:
+            # codex R2: contention(EAGAIN/EWOULDBLOCK/EACCES)만 양보(skip). flock
+            # 미지원 FS(ENOLCK/EOPNOTSUPP/EINVAL 등)는 직렬화 포기하고 단독 스캔 —
+            # 그렇지 않으면 그런 FS 에서 reverify 가 영구히 스캔 안 함.
+            if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+                return None  # 다른 프로세스가 스캔 중 — 양보
+            return scan_memories(mem_dir)
+        last2 = _read_sidecar_last_scan()
+        now2 = time.time()
+        if last2 is not None and 0 <= (now2 - last2) < interval_days * 86400:
+            return None  # 락 대기 사이 다른 프로세스가 막 스캔 완료
+        return scan_memories(mem_dir)
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            os.close(lock_fd)
+        except OSError:
+            pass

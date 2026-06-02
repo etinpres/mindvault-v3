@@ -67,12 +67,26 @@ CHAT_RE = re.compile(
     r"^(?:잘자|굿나잇|그럼\s?이만|나중에|또\s?봐))"
 )
 
+# 강한 meta — 그 자체로 Claude/세션/모델/토큰을 묻는 표현. 문장 어디서 매칭돼도 meta.
 META_RE = re.compile(
     r"(무슨\s?모델|어떤\s?모델|어떤\s?(?:버전|claude)|claude\s?(?:몇|version)|"
     r"context\s?(?:얼마|남았|window|용량)|토큰\s?(?:얼마|남았|사용)|"
     r"너는\s?(?:누구|뭐|어떤)|당신은\s?(?:누구|뭐)|네\s?이름|"
-    r"claude\s?code|이\s?세션|현재\s?세션|버전\s?(?:이|확인)|모델\s?(?:이|확인))"
+    r"버전\s?(?:이|확인)|모델\s?(?:이|확인))"
 )
+
+# bug-audit 2026-06-02 (#22): 모호한 자기참조 토큰. 'claude code'·'이 세션'·
+# '현재 세션' 은 일반 작업 쿼리에도 흔히 등장하는 명사구라(예: 'claude code 로
+# 만든 프로젝트 분석', '현재 세션 동안 진행한 youtube 작업 요약') 앵커 없이
+# 문장 중간 매칭하면 정당한 작업 쿼리의 회수를 silent 차단한다. 쿼리가 짧아
+# 이 구절이 주제일 때(≤ META_AMBIGUOUS_MAX_WORDS 단어)만 meta 로 인정한다.
+META_SELFREF_RE = re.compile(r"(claude\s?code|이\s?세션|현재\s?세션)")
+# codex R2: ≤4 는 'claude code 프로젝트 분석'·'현재 세션 작업 요약'(둘 다 4단어) 같은
+# 정당한 작업 쿼리를 meta 로 오분류해 회수를 silent 차단했다. ≤3 으로 강화 —
+# 기존 test_meta('현재 세션 정보'=3단어)는 유지되고 4단어 작업 쿼리는 회수 진행.
+# 비대칭성: false-meta(작업쿼리 회수차단)는 해롭고 false-non-meta(메타쿼리 회수)는
+# raw_cosine 게이트가 걸러 무해 → meta 로 분류하지 않는 쪽으로 보수적 설정.
+META_AMBIGUOUS_MAX_WORDS = 3
 
 # code intent — 명확한 코드 작업 키워드 또는 파일 경로/확장자
 _FILE_EXT_RE = re.compile(
@@ -132,6 +146,13 @@ def classify(prompt: str) -> IntentResult:
 
     # meta: Claude/세션 메타
     meta_hits = _matched_terms(META_RE, p)
+    if not meta_hits:
+        # 모호한 자기참조 토큰은 쿼리가 짧아 주제일 때만 meta (#22).
+        selfref_hits = _matched_terms(META_SELFREF_RE, p)
+        if selfref_hits:
+            word_count = len(re.findall(r"[가-힣A-Za-z0-9]+", p))
+            if word_count <= META_AMBIGUOUS_MAX_WORDS:
+                meta_hits = selfref_hits
     if meta_hits:
         return IntentResult(
             "meta", min(1.0, 0.7 + 0.1 * len(meta_hits)), meta_hits
@@ -208,10 +229,22 @@ def _call_gemma_intent(prompt_text: str) -> str | None:
     try:
         with urllib.request.urlopen(req, timeout=GEMMA_INTENT_TIMEOUT) as resp:
             data = json.loads(resp.read())
-        choices = data.get("choices") or []
-        if not choices:
+        # bug-audit 2026-06-02 (#21): 비-dict valid JSON(서버 오류 래퍼/프록시가
+        # []/숫자/문자열/null 을 200 으로 반환)이면 data.get / choices[0].get 가
+        # except 튜플 밖 AttributeError 로 hook 핫패스를 뚫고 negative-cache 도
+        # 못 박혀 매 turn 재호출. contradiction_detector._call_gemma_for_classify
+        # 의 isinstance 가드와 동일 관례로 컨테이너 타입을 먼저 검증.
+        if not isinstance(data, dict):
             return None
-        msg = choices[0].get("message") or {}
+        # bug-audit 2026-06-02 (R3, #21 완성): choices 자체가 truthy 비-list(dict/int)
+        # 면 `not choices` 를 통과한 뒤 choices[0] 가 TypeError/KeyError(except 튜플 밖)
+        # → negative-cache 우회로 매 turn 재호출. list 타입을 먼저 검증.
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            return None
+        msg = choices[0].get("message")
+        if not isinstance(msg, dict):
+            return None
         # mlx_lm.server 의 thinking-mode 응답은 message.content 가 빈 문자열이고
         # raw trace 가 message.reasoning 필드에만 들어간다 (max_tokens 가 작아
         # 라벨 도달 전에 토큰 소진되는 케이스). content 비면 reasoning fallback.

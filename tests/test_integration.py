@@ -1,6 +1,6 @@
 """Sprint 4 Task 8 — E2E 통합 테스트.
 
-선결조건: BGE-M3 서버 기동 + production index.db에 메모리 인덱싱 완료.
+선결조건: 임베딩 서버(Arctic-ko) 기동 + production index.db에 메모리 인덱싱 완료.
 MV3_SKIP_INTEGRATION=1 환경변수로 skip 가능 (CI에서).
 """
 import json

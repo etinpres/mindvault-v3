@@ -180,7 +180,7 @@ def test_handle_compact_missing_transcript_skips(capsys):
 
 def test_main_routes_compact_to_reinjection(monkeypatch):
     import session_memory as sm
-    monkeypatch.setattr(sm, "trigger_bge_m3_warmup", lambda: None)
+    monkeypatch.setattr(sm, "trigger_arctic_warmup", lambda: None)
     monkeypatch.delenv("MV3_HOOK_RECURSION_GUARD", raising=False)
     called = {}
     monkeypatch.setattr(sm, "handle_compact_reinjection",
@@ -200,7 +200,7 @@ def test_main_routes_compact_to_reinjection(monkeypatch):
 
 def test_main_startup_does_not_route_compact(monkeypatch):
     import session_memory as sm
-    monkeypatch.setattr(sm, "trigger_bge_m3_warmup", lambda: None)
+    monkeypatch.setattr(sm, "trigger_arctic_warmup", lambda: None)
     monkeypatch.delenv("MV3_HOOK_RECURSION_GUARD", raising=False)
     flag = {}
     monkeypatch.setattr(sm, "handle_compact_reinjection",
@@ -332,7 +332,7 @@ def test_resolve_transcript_stale_path_falls_back_to_sid(tmp_path, monkeypatch):
 @pytest.mark.parametrize("src", ["compact", "COMPACT", " compact ", "Compact"])
 def test_main_source_variants_route_compact(monkeypatch, src):
     import session_memory as sm
-    monkeypatch.setattr(sm, "trigger_bge_m3_warmup", lambda: None)
+    monkeypatch.setattr(sm, "trigger_arctic_warmup", lambda: None)
     monkeypatch.delenv("MV3_HOOK_RECURSION_GUARD", raising=False)
     called = {}
     monkeypatch.setattr(sm, "handle_compact_reinjection",

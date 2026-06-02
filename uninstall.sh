@@ -38,14 +38,28 @@ if [ "${MV3_UNINSTALL_GEMMA_ONLY:-0}" = "1" ]; then
   exit 0
 fi
 
-# Hook scripts targeted for removal. Matched as substring anywhere in the
-# settings.json hook command (covers Stop / SessionEnd async variants too).
+# v3.2.3 (#22) — MV3_SCRIPTS_DIR override 존중. install 과 동일 변수 사용.
+# (HOOK_TARGETS 보다 먼저 정의 — bug-audit 2026-06-02 #7 의 drift hook 경로 매칭용.)
+SCRIPTS_DIR="${MV3_SCRIPTS_DIR:-$HOME/.claude/scripts/mindvault}"
+
+# Hook scripts targeted for file removal (rm). MUST be absolute paths only —
+# 이 배열은 settings.json 매칭과 파일 rm 양쪽에 쓰인다.
 HOOK_TARGETS=(
   "$HOOKS_DIR/session-memory.py"
   "$HOOKS_DIR/session-memory-end.py"
   "$HOOKS_DIR/session-memory-end-async.sh"
   "$HOOKS_DIR/session-memory-precompute.sh"
   "$HOOKS_DIR/memory-recall.py"
+)
+# bug-audit 2026-06-02 (R3): settings.json 매칭 *전용* substring (rm 루프엔 절대
+# 넣지 않는다). #7 에서 drift 훅 제거를 위해 bare "deploy_drift_check.py" 를
+# HOOK_TARGETS 에 넣었더니 rm 루프가 cwd 의 동명 파일(예: repo scripts/ 에서
+# uninstall 실행 시 소스)을 삭제하는 footgun 이 됐다. 실제 배포 파일은 $SCRIPTS_DIR
+# rm -rf 가 지우므로, 이 토큰은 settings 매칭에만 쓴다. install 은 default
+# SCRIPTS_DIR 경로로 등록하지만 uninstall 은 MV3_SCRIPTS_DIR override 를 존중하므로
+# 경로 불일치에도 확실히 제거되도록 파일명으로 매칭.
+SETTINGS_MATCH_EXTRA=(
+  "deploy_drift_check.py"
 )
 
 # v3.2.3 (#3) — Launchd labels MindVault v3 가 install 단계에서 deploy 하는 것만.
@@ -68,7 +82,8 @@ LEGACY_LAUNCHD_LABELS=(
 # JSON parse 실패 시 .bak 에서 자동 복원.
 if [ -f "$SETTINGS" ]; then
   cp "$SETTINGS" "$SETTINGS.bak"
-  python3 - "$SETTINGS" "${HOOK_TARGETS[@]}" <<'PY'
+  # settings 매칭엔 HOOK_TARGETS(절대경로) + SETTINGS_MATCH_EXTRA(substring) 모두 전달.
+  python3 - "$SETTINGS" "${HOOK_TARGETS[@]}" "${SETTINGS_MATCH_EXTRA[@]}" <<'PY'
 import json, os, sys
 from pathlib import Path
 
@@ -192,11 +207,44 @@ if [ -f "$INSTALL_MANIFEST" ]; then
 fi
 
 # --- 4. Deployed scripts directory ----------------------------------------
-# v3.2.3 (#22) — MV3_SCRIPTS_DIR override 존중. install 과 동일 변수 사용.
-SCRIPTS_DIR="${MV3_SCRIPTS_DIR:-$HOME/.claude/scripts/mindvault}"
+# SCRIPTS_DIR 는 파일 상단(HOOK_TARGETS 앞)에서 이미 정의됨 (MV3_SCRIPTS_DIR 존중).
 if [ -d "$SCRIPTS_DIR" ]; then
   rm -rf "$SCRIPTS_DIR"
   echo "✓ removed $SCRIPTS_DIR"
+fi
+
+# --- 4b. git hook unwire + .repo-path marker (bug-audit 2026-06-02 #2) ------
+# install.sh 가 git checkout 에서 실행되면 core.hooksPath=.githooks 를 설정하고
+# .repo-path 를 기록한다. 이를 해제하지 않으면 다음 커밋의 post-commit 훅이
+# `MV3_SYNC_ONLY=1 install.sh` 를 다시 돌려 방금 제거한 시스템을 통째로 부활시킨다
+# (uninstall 이 안 stick — 특히 contributor 의 git checkout 머신).
+REPO_PATH_MARKER="$HOME/.claude/mindvault-v3/.repo-path"
+PRIOR_HP_MARKER="$HOME/.claude/mindvault-v3/.prior-hookspath"
+if [ -f "$REPO_PATH_MARKER" ]; then
+  REPO_DIR_RECORDED="$(cat "$REPO_PATH_MARKER" 2>/dev/null || true)"
+  if [ -n "$REPO_DIR_RECORDED" ] && [ -d "$REPO_DIR_RECORDED/.git" ]; then
+    # 사용자가 직접 다른 값으로 바꾼 경우 보존 — install 이 설정한 .githooks 일 때만 처리.
+    current_hp="$(git -C "$REPO_DIR_RECORDED" config --get core.hooksPath 2>/dev/null || true)"
+    if [ "$current_hp" = ".githooks" ]; then
+      # bug-audit 2026-06-02 (R3): install 이전 사용자 custom hooksPath 가 기록돼 있으면
+      # unset 대신 *복원* (install 의 clobber 를 되돌림). 없으면 unset.
+      if [ -f "$PRIOR_HP_MARKER" ]; then
+        PRIOR_HP="$(cat "$PRIOR_HP_MARKER" 2>/dev/null || true)"
+        if [ -n "$PRIOR_HP" ]; then
+          git -C "$REPO_DIR_RECORDED" config core.hooksPath "$PRIOR_HP" 2>/dev/null || true
+          echo "✓ restored git core.hooksPath='$PRIOR_HP' in $REPO_DIR_RECORDED (install 이전 값 복원)"
+        else
+          git -C "$REPO_DIR_RECORDED" config --unset core.hooksPath 2>/dev/null || true
+          echo "✓ unset git core.hooksPath in $REPO_DIR_RECORDED (post-commit 자동 재배포 차단)"
+        fi
+      else
+        git -C "$REPO_DIR_RECORDED" config --unset core.hooksPath 2>/dev/null || true
+        echo "✓ unset git core.hooksPath in $REPO_DIR_RECORDED (post-commit 자동 재배포 차단)"
+      fi
+    fi
+  fi
+  rm -f "$REPO_PATH_MARKER" "$PRIOR_HP_MARKER"
+  echo "✓ removed .repo-path marker"
 fi
 
 # --- 5. Launchd services --------------------------------------------------

@@ -29,9 +29,16 @@ def _search_sessions(query: str, top_k: int = 3) -> list[dict]:
 
 
 def _search_memory(query: str, top_k: int = 5) -> list[dict]:
-    """Sprint 4: memory/*.md hybrid RRF. 명시 호출이라 threshold 0."""
+    """Sprint 4: memory/*.md hybrid RRF. 명시 호출이라 게이트 0.
+
+    bug-audit 2026-06-02 (#9): score_threshold 만 0 으로 풀고 raw_cosine_min 을
+    안 넘겨 기본 0.32 게이트가 그대로 적용됐다 — 사용자가 직접 친 /recall 인데
+    약-관련 메모리가 silent drop. 자동주입 hook(0.32 게이트, V1 토큰낭비 회피)과
+    달리 명시 검색은 "관련된 건 다 보여줘"가 의도(top_k=5, score_threshold=0 도
+    같은 신호)라 raw 게이트도 면제한다.
+    """
     from memory_search import recall_memory  # noqa: WPS433
-    return recall_memory(query, top_k=top_k, score_threshold=0.0)
+    return recall_memory(query, top_k=top_k, score_threshold=0.0, raw_cosine_min=0.0)
 
 
 def main() -> int:
