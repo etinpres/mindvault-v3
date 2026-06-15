@@ -259,7 +259,12 @@ fi
 
 ### 8. MEMORY.md 인덱스 갱신
 
-§7 의 lock 안에서 진행. 신규 토픽 파일을 만들었다면 `$MEM_DIR/MEMORY.md` 끝에 1줄 추가 (flat list 패턴):
+§7 의 lock 안에서 진행. 신규 토픽 파일을 만들었다면 인덱스에 1줄 추가. **2026-06-15 부터 인덱스는 type 별 분리** — MEMORY.md 는 첫 200줄(또는 25KB, 먼저 도달) 만 SessionStart 에 로드되는 **hard limit**(공식: code.claude.com/docs/en/memory) 이라 procedural/feedback 을 거기 쌓으면 초과분이 잘린다:
+- `procedural` → `$MEM_DIR/MEMORY-PROCEDURAL.md` 끝에 추가
+- `feedback` → `$MEM_DIR/MEMORY-FEEDBACK.md` 끝에 추가
+- 그 외(`project`/`user`/`reference`) → `$MEM_DIR/MEMORY.md` 해당 섹션
+
+세 경우 모두 flat list 패턴 (dash `—`):
 
 ```markdown
 - [<제목>](<파일명>.md) — <한 줄 hook>
@@ -267,7 +272,7 @@ fi
 
 콜론(`:`) 아니라 **dash(`—`) 사용**. 기존 파일 append 한 경우 인덱스 갱신 불필요.
 
-`MEMORY.md` 가 200줄 넘으면 경고 출력. 인덱스 truncation 위험 (메모리 회수 hook 이 200줄 초과분 무시할 수 있음).
+`MEMORY.md` 가 200줄(또는 25KB) 넘으면 경고 출력 — **harness 가 SessionStart 에 첫 200줄/25KB 만 로드하는 hard truncate** 다(회수 hook 무관, 회수는 개별 `*.md` hybrid 검색). procedural/feedback 은 분리 파일(`MEMORY-PROCEDURAL/FEEDBACK.md`, SessionStart 미로드라 길이 무관)로 빠졌으므로 MEMORY.md 본체는 project/user/reference 만 — 200 여유 충분. 그래도 본체가 200 근접하면 완료 항목을 ARCHIVE 로.
 
 ### 8.5. Contradiction 검토 (v3.4+)
 

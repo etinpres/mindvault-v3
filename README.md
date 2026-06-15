@@ -2,7 +2,7 @@
 
 > Claude Code의 영구 기억 시스템. 5-layer 파이프라인으로 세션 요약 자동 주입 · 자연어 검색 · Memory Compiler · 자동 회수 · 모순 감지까지.
 
-**v3.8.3** · 전체 시스템 6라운드 적대적 점검 R2 — 실재 결함 수정(HIGH 2: 임베딩 NaN 영구저장·uninstall 재설치 부활) + codex 2회 독립검증 + BGE-M3 잔재 전면 정리 · Karpathy LLM-as-Compiler 패턴 실증 · Phase 1 토대(출처·효과적 회수·신뢰성) 완성 · 배포 후크화(git hook 자동 배포 + drift 백스톱) · macOS (Apple Silicon) · MIT license · 815 passed + 41 subtests
+**v3.8.5** · MEMORY.md 인덱스 200줄/25KB hard limit 회피 — procedural/feedback 분리(SessionStart 미로드) + close-session §8 type 분기로 반복 슬림화 종결 · Gemma 4 E4B→12B-4bit 교체(분류 정확도·mlx-vlm 백엔드) · 이전: 전체 시스템 6R 적대점검·Phase 1 토대·배포 후크화 · macOS (Apple Silicon) · MIT license · 815 passed + 41 subtests
 
 ---
 
