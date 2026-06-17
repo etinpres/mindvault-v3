@@ -32,7 +32,11 @@ MAX_INPUT_CHARS = 32_000  # 토큰화 전 1차 char cap (cheap pre-filter)
 # 넣으면 크래시가 아니라 position embedding 범위 초과로 all-NaN 벡터가 나온다.
 # 이전엔 char cap(32000)만 있어 한국어 장문(~2토큰/자)은 13000~16000 토큰까지
 # 통과 → NaN. CLS 가 index 0 이라 앞에서 자르면 CLS 보존 + 유효 벡터 보장.
-MAX_TOKENS = 8192
+# mem-peak fix 2026-06-17: 8192 → 4096. 8192토큰 단일 forward 는 self-attention
+# activation 으로 순간 ~9GB peak(메모리 압박 시 OOM, 부하검증서 재현). O(n²) 라 4096 은
+# peak ~1/4(~2.3GB). 실측(메모리 282개) p95=3743tok → 95% 무손실, 초과 9개만 추가
+# truncate(정확도 trade-off 수용). 거대 파일은 별도 데이터 위생으로 분할.
+MAX_TOKENS = 4096
 QUERY_PREFIX = "query: "  # config_sentence_transformers.json 명시
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -78,7 +82,14 @@ def embed(text: str, kind: str = "passage") -> list[float]:
         norm = mx.sqrt((cls * cls).sum(axis=-1, keepdims=True))
         normalized = cls / norm
         mx.eval(normalized)
-        return normalized[0].tolist()
+        result = normalized[0].tolist()
+        # mem-peak fix 2026-06-17: 큰 입력(>1024tok) forward 후 activation 잔여 버퍼를
+        # 즉시 OS 반환. 연속 큰 요청이 peak 을 누적해 OOM 나는 것 방지(set_cache_limit 은
+        # cache 만 제한, 단발 activation 잔여는 다음 alloc 까지 점유). 작은 요청엔 미호출
+        # — 매 요청 clear 는 재할당 오버헤드.
+        if len(tokens) > 1024:
+            mx.clear_cache()
+        return result
 
 
 class Handler(BaseHTTPRequestHandler):
