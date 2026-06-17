@@ -2,7 +2,7 @@
 
 > Claude Code의 영구 기억 시스템. 5-layer 파이프라인으로 세션 요약 자동 주입 · 자연어 검색 · Memory Compiler · 자동 회수 · 모순 감지까지.
 
-**v3.8.5** · MEMORY.md 인덱스 200줄/25KB hard limit 회피 — procedural/feedback 분리(SessionStart 미로드) + close-session §8 type 분기로 반복 슬림화 종결 · Gemma 4 E4B→12B-4bit 교체(분류 정확도·mlx-vlm 백엔드) · 이전: 전체 시스템 6R 적대점검·Phase 1 토대·배포 후크화 · macOS (Apple Silicon) · MIT license · 815 passed + 41 subtests
+**v3.9.0** · gbrain 차용 — **Contextual Retrieval**(body 임베딩에 맥락 선붙임, 로컬 Gemma synopsis, off 기본·회귀 0) + **Eval Gate**(라벨 코퍼스 P@k/R@k/MRR 회귀 게이트) · A/B 실측 = MV 의 description 별도벡터가 이미 맥락 내장이라 CR 검색개선 0 → 기본 off·게이트는 회귀보호 · 2-track 적대검증(Claude 15R + codex 5패스, ~33결함 수정) · 이전: MEMORY.md 200줄 회피·Gemma 12B 교체·6R 적대점검 · macOS (Apple Silicon) · MIT license · 927 passed + 41 subtests
 
 ---
 

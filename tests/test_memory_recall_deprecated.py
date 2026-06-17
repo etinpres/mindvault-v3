@@ -141,7 +141,7 @@ def test_apply_decay_also_decays_raw_cosine_via_recall_pipeline(tmp_path, monkey
 
     # Stub the index DB lookups: deprecated has raw=0.78, fresh has raw=0.74
     # _vec_top_k returns (rows, raw_cosine_map)
-    def fake_vec(conn, qvec, limit):
+    def fake_vec(conn, qvec, limit, use_ctx=False):  # use_ctx: Phase 5 CR 경로 시그니처
         rows = [
             (str(dep), 1, "0.78"),
             (str(fresh), 2, "0.74"),

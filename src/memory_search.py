@@ -288,16 +288,52 @@ def _fts_top_k(
     return [(r["path"], idx + 1, "") for idx, r in enumerate(rows)]
 
 
+def _cr_search_enabled() -> bool:
+    """회수 시 Contextual Retrieval 임베딩 사용 여부 — env `MV3_CR_SEARCH=1`.
+    기본 off(0) → 운영 회수 hook 회귀 0. eval/실험 경로에서만 on(goal A1/A4)."""
+    return os.environ.get("MV3_CR_SEARCH", "0") == "1"
+
+
+def _decode_vec(blob) -> "np.ndarray | None":
+    """BLOB → 검증된 float32 (EMBED_DIM,) 벡터. 빈/손상/차원불일치/비유한 → None.
+    bug-audit 2026-06-02 (#8/codex R2) 검증을 단일 헬퍼로 통합 — ctx→raw 폴백 재사용."""
+    if not blob:
+        return None
+    try:
+        arr = np.frombuffer(blob, dtype=np.float32)
+    except ValueError:
+        return None
+    if arr.shape != (EMBED_DIM,):
+        return None
+    if not np.isfinite(arr).all():
+        return None
+    return arr
+
+
 def _vec_top_k(
-    conn: sqlite3.Connection, query_vec: list[float], limit: int = 10
+    conn: sqlite3.Connection, query_vec: list[float], limit: int = 10,
+    use_ctx: bool = False,
 ) -> tuple[list[tuple[str, int, str]], dict[str, float]]:
     """BLOB에 저장된 모든 벡터를 numpy로 로드 → cosine top-k.
     반환: ([(path, rank, kind), ...], {path: max_raw_cosine})
     raw_cosine_map은 V1-style 토큰 낭비 차단을 위한 absolute relevance 게이트용.
+
+    use_ctx=True (CR on): body 행은 COALESCE(embedding_ctx, embedding) 사용
+    (ctx 없으면 raw 폴백 — off-인덱싱 메모리 누락 0). description 행은 항상 raw
+    embedding(이미 synopsis 성격). 쿼리 임베딩은 wrapper 미적용 clean(asymmetric).
+    off(기본)는 SELECT 가 raw embedding 그대로 → 기존 동작 바이트 동일.
     """
-    rows = list(
-        conn.execute("SELECT path, kind, embedding FROM memories_vec")
-    )
+    if use_ctx:
+        # 두 컬럼 모두 로드 → Python 에서 ctx 우선·손상/없음 시 raw 폴백.
+        # (COALESCE 는 non-NULL 손상 ctx 를 골라 행 전체를 skip 시켜 raw 폴백을
+        #  막는 버그가 있었다 — adversarial review 2026-06-17. 명시 폴백으로 교정.)
+        rows = list(conn.execute(
+            "SELECT path, kind, embedding, embedding_ctx FROM memories_vec"
+        ))
+    else:
+        rows = list(
+            conn.execute("SELECT path, kind, embedding FROM memories_vec")
+        )
     if not rows:
         return [], {}
     # NEXT-36 (2026-05-26): valid 카운터로 mat ↔ meta 정합. 이전엔 mat[i] (row 인덱스)
@@ -306,32 +342,33 @@ def _vec_top_k(
     #   (b) raw_map 이 cosine 값을 잘못된 path 에 매핑 (cross-contamination)
     # search.py:vec_candidates 의 안전 패턴(valid 카운터 + mat[:valid])과 일치시킴.
     mat = np.zeros((len(rows), EMBED_DIM), dtype=np.float32)
+    # use_ctx 면 게이트용 raw 임베딩 행렬 별도 보유. raw_cosine 게이트(0.32)는 raw 분포
+    # 로 캘리브됐는데 ctx 코사인에 그대로 적용하면 미스게이팅(adversarial review R14).
+    # → body 행은 ctx 로 *랭킹*, raw 로 *게이트*. off(use_ctx=False)는 gate_mat 없음
+    #   → 아래 gate_sims=sims 로 기존 동작 바이트 동일(prod 회수 무영향).
+    gate_mat = np.zeros((len(rows), EMBED_DIM), dtype=np.float32) if use_ctx else None
     meta: list[tuple[str, str]] = []
     valid = 0
     for r in rows:
-        emb = r["embedding"]
-        if not emb:
-            # NEXT-28 sentinel — 빈 bytes 는 의도된 무한-재시도 차단. silent.
-            continue
-        # bug-audit 2026-06-02 (#8): 4의 배수가 아닌 손상 blob 은 frombuffer 가
-        # shape 가드 도달 전 ValueError → recall 전체(vec+이미 구한 fts)를 0건으로
-        # 만든다. 손상 행만 skip (search.py:vec_candidates 와 parity).
-        try:
-            arr = np.frombuffer(emb, dtype=np.float32)
-        except ValueError:
-            _debug(f"skip corrupt vec bytes len={len(emb)} path={r['path']}")
-            continue
-        if arr.shape != (EMBED_DIM,):
-            _debug(f"skip bad vec dim {arr.shape} path={r['path']}")
-            continue
-        # bug-audit 2026-06-02 (codex R2): pre-existing NaN/Inf 행(길이·차원은
-        # 정상이나 값이 비유한)은 cosine 을 NaN 으로 만들어 argsort 순위를 오염하고
-        # raw 게이트(raw < threshold)를 NaN 비교로 우회한다. embed_text 가드(#1)는
-        # 신규 저장만 막으므로 읽기 측에서도 비유한 행을 skip.
-        if not np.isfinite(arr).all():
-            _debug(f"skip non-finite vec path={r['path']}")
+        # use_ctx body 행: contextual 임베딩 우선, 손상/NULL 이면 같은 행의 raw 로
+        # 폴백(off-인덱싱·손상 ctx 모두 누락 0). description·off 는 raw 사용.
+        arr = None
+        if use_ctx and r["kind"] == "body":
+            arr = _decode_vec(r["embedding_ctx"])
+        if arr is None:
+            arr = _decode_vec(r["embedding"])
+        if arr is None:
+            # 빈/손상/차원불일치/비유한 — ctx·raw 모두 무효. silent skip(기존 동작).
             continue
         mat[valid] = arr
+        if use_ctx:
+            # 게이트는 raw embedding 코사인 기준. body 행은 raw 별도 디코드(랭킹 arr 는
+            # ctx). raw 손상 시 arr(ctx) 폴백. description 은 raw 가 곧 arr.
+            if r["kind"] == "body":
+                graw = _decode_vec(r["embedding"])
+                gate_mat[valid] = graw if graw is not None else arr
+            else:
+                gate_mat[valid] = arr
         meta.append((r["path"], r["kind"]))
         valid += 1
     if valid == 0:
@@ -345,16 +382,24 @@ def _vec_top_k(
     norms = np.linalg.norm(mat, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     mat_norm = mat / norms
-    sims = mat_norm @ q  # (valid,) raw cosine [0..1]
+    sims = mat_norm @ q  # (valid,) 랭킹 코사인 (use_ctx body=ctx, 그 외 raw)
     idx_sorted = np.argsort(-sims)[:limit]
     results = [(meta[i][0], rank + 1, meta[i][1]) for rank, i in enumerate(idx_sorted)]
-    # Sprint 11: raw_map은 limit과 무관하게 전체 path × kind 의 최대 cosine 보유.
+    # 게이트용 raw 코사인: use_ctx 면 gate_mat(raw) 기준, off 면 sims 와 동일(불변).
+    if use_ctx:
+        gmat = gate_mat[:valid]
+        gnorms = np.linalg.norm(gmat, axis=1, keepdims=True)
+        gnorms[gnorms == 0] = 1.0
+        gate_sims = (gmat / gnorms) @ q
+    else:
+        gate_sims = sims
+    # Sprint 11: raw_map은 limit과 무관하게 전체 path × kind 의 최대 (raw) cosine 보유.
     # wikilink 1-hop expansion 게이트(B)가 top-K 밖 target도 cosine 확인 가능하도록.
     # 게이트 통과 못한 path는 expand_wikilinks에서 차단 → 무관 메모리 노이즈 0.
     # 메인 raw_cosine 게이트(recall_memory)는 path 단위로 max 보고 동작 — 동일.
     raw_map: dict[str, float] = {}
     for i, (path, _kind) in enumerate(meta):
-        sim = float(sims[i])
+        sim = float(gate_sims[i])
         if sim > raw_map.get(path, -1.0):
             raw_map[path] = sim
     return results, raw_map
@@ -554,6 +599,7 @@ def recall_memory(
     raw_cosine_min: float = DEFAULT_RAW_COSINE_MIN,
     db_path: Path | None = None,
     expand_wikilinks: bool = True,
+    use_ctx: bool | None = None,
 ) -> list[dict]:
     """hybrid RRF + raw vec cosine 게이트 memory 검색.
 
@@ -576,11 +622,13 @@ def recall_memory(
     try:
         fts_rows = _fts_top_k(conn, query, limit=10)
 
+        if use_ctx is None:
+            use_ctx = _cr_search_enabled()
         vec_rows: list[tuple[str, int, str]] = []
         raw_cosine_map: dict[str, float] = {}
         qvec = embed_text(query)
         if qvec is not None:
-            vec_rows, raw_cosine_map = _vec_top_k(conn, qvec, limit=10)
+            vec_rows, raw_cosine_map = _vec_top_k(conn, qvec, limit=10, use_ctx=use_ctx)
 
         # NEXT-32 (2026-05-24): alias_index lookup 정식 통합. NEXT-31 에서
         # Gemma 생성 alias 로 시도했다 cohort 회귀 (WEAK 5/15→3/15) 일으켰던

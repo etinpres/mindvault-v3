@@ -1,0 +1,376 @@
+{
+  "schema_version": 1,
+  "label": "off-mode v3.8.5 baseline (Arctic-ko, prod index 261 memories, use_ctx=false)",
+  "generated_at": "2026-06-17T05:26:21.752968+00:00",
+  "git_commit": "0eac53f",
+  "k": 5,
+  "use_ctx": false,
+  "thresholds": {
+    "min_recall_at_5": 0.85,
+    "min_first_hit": 0.8,
+    "max_recall_drop": 0.03,
+    "max_mrr_drop": 0.03
+  },
+  "metrics": {
+    "mean_recall_at_5": 1.0,
+    "mean_precision_at_5": 0.2000000000000001,
+    "mrr": 0.984375,
+    "first_relevant_hit_rate": 0.96875,
+    "expected_top1_hit_rate": 0.96875,
+    "n": 32
+  },
+  "per_query": [
+    {
+      "query_id": "q01-sendmail",
+      "retrieved": [
+        "sendmail-cli",
+        "sendmail-natural-language",
+        "graphify-natural-language",
+        "higgsfield-cli-generate",
+        "v0 MCP 설정"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q02-scanner",
+      "retrieved": [
+        "scanner-cli",
+        "project_docscanner",
+        "Project assemble — Multi-Agent CLI Skill (v2.1)",
+        "텔레그램 Claude Code 리모컨 MVP 완료",
+        "claude-cli-llm-backend"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q03-higgsfield-cli",
+      "retrieved": [
+        "higgsfield-cli-generate",
+        "manual-ai-image-inject",
+        "Higgsfield 도입 검토 (진행 중)",
+        "bg-chatgpt-image-automation",
+        "higgsfield-concurrent-limit"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q04-graphify-nl",
+      "retrieved": [
+        "graphify-natural-language",
+        "scan-natural-language",
+        "sendmail-natural-language",
+        "claude-design-handoff",
+        "다음 영상 후보 — Gemma4 + n8n + Claude Code 자동화"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q05-oceanweb",
+      "retrieved": [
+        "오션웹 = 페이퍼클립",
+        "smartstore-detail-page",
+        "stitchscreen-project",
+        "fitshot-docker-deploy",
+        "Team Structure"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q06-iwinv",
+      "retrieved": [
+        "iwinv-elcap-outbound",
+        "rsync-exclude-glob",
+        "loopback-ipv6-hijack",
+        "fitshot-ui-selection-polish",
+        "/assemble V4 Spike XIII — Phase G blank-Mac dogfood (V4 release gate, NEEDS-FIX)"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q07-kakao-koe205",
+      "retrieved": [
+        "kakao-oauth-koe205",
+        "fitshot-docker-deploy",
+        "docker-compose-env-anchor",
+        "proxy-url-origin-base",
+        "MEMORY-PROCEDURAL"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q08-grammar-saas",
+      "retrieved": [
+        "project-grammar-saas",
+        "user-english-teacher-background",
+        "feedback-repetition-learning",
+        "사용자 실제 상황 — 본업은 개발이 아님",
+        "portone-pg-onboarding"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q09-haruko",
+      "retrieved": [
+        "haruko-novel",
+        "scenario-prose-style",
+        "scenario-expansion",
+        "haruko-novel-phase3-status",
+        "fitshot-complete-templates"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q10-fitshot-docker",
+      "retrieved": [
+        "fitshot-docker-deploy",
+        "fitshot-complete-template-philosophy",
+        "headless-webfont-render",
+        "fitshot-complete-templates",
+        "project_fitshot_payment_audit"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q11-fitshot-payment",
+      "retrieved": [
+        "project_fitshot_payment_audit",
+        "portone-v2-integration",
+        "portone-kpn-console",
+        "portone-pg-onboarding",
+        "fitshot-docker-deploy"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q12-taxi-ledger",
+      "retrieved": [
+        "project-taxi-ledger",
+        "CampusFlow 출시 현황",
+        "MEMORY-ARCHIVE",
+        "portone-pg-onboarding",
+        "사용자 실제 상황 — 본업은 개발이 아님"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q13-atomic-json",
+      "retrieved": [
+        "procedural-atomic-json-write",
+        "frontmatter-parser-consistency",
+        "MEMORY-ARCHIVE",
+        "/assemble V4 Spike II — B-6 dogfood 후속 (15 carryforward)",
+        "graphify-obsidian-aliases"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q14-puppeteer-wrap",
+      "retrieved": [
+        "puppeteer-capture-16384-wrap",
+        "chrome-pixel-compare",
+        "puppeteer-setcontent-dataurl",
+        "스마트스토어 SaaS (RESET 2026-04-17)",
+        "MEMORY-PROCEDURAL"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q15-credit-refund",
+      "retrieved": [
+        "credit-refund-bucket-direct",
+        "fitshot-docker-deploy",
+        "mv3-drift-direction-check",
+        "project_fitshot_payment_audit",
+        "skill 정리 시 /assemble 컨시어지 관점 고려"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q16-numpy-align",
+      "retrieved": [
+        "numpy-mat-meta-align",
+        "benchmark-skill-sweep",
+        "vacuous-pass-guard",
+        "project-mindvault",
+        "HyperFrames 롱폼 파이프라인 (Remotion 교체)"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q17-no-v1-waste",
+      "retrieved": [
+        "no-v1-token-waste",
+        "MindVault v1 (폐기) / v2 (운영)",
+        "recalled-memory-weight",
+        "retroactive-transcript-parsing",
+        "system-reminder-sanitize"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q18-subagent-inherit",
+      "retrieved": [
+        "subagent-model-inherit",
+        "cc-agent-view-model-effort-pin",
+        "fitshot-model-roster",
+        "readonly-agent-no-exec",
+        "gemma12b-mlx-vlm"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q19-no-api-default",
+      "retrieved": [
+        "feedback-no-api-default",
+        "claude-cli-llm-backend",
+        "feedback-notion-not-memory-backend",
+        "Apify MCP Bearer 토큰 우회 + YouTube Actor 정보",
+        "cdss-mindvault-fork"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q20-outro-no-preview",
+      "retrieved": [
+        "유튜브 영상 outro에 다음편 예고 금지",
+        "no-cross-video-meta-repeat",
+        "youtube-render-pipeline",
+        "feedback-youtube-title-user-selection",
+        "자막 줄바꿈 규칙 (숏폼 한정)"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q21-english-teacher",
+      "retrieved": [
+        "user-english-teacher-background",
+        "project-grammar-saas",
+        "feedback-repetition-learning",
+        "feedback-nonmajor-channel-tone",
+        "muratcankoylan-agent-skills"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q22-honorific",
+      "retrieved": [
+        "사용자 호칭 및 톤",
+        "공개 문서/코드에 사적 호칭 금지",
+        "feedback-nonmajor-channel-tone",
+        "유튜브 대본 어체 — 합니다체",
+        "MEMORY-FEEDBACK"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q23-oracle-cloud",
+      "retrieved": [
+        "oracle-cloud-free-tier",
+        "feedback-no-api-default",
+        "tts-vertex-ai-migration",
+        "Higgsfield 도입 검토 (진행 중)",
+        "v0 MCP 설정"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q24-portone-console",
+      "retrieved": [
+        "portone-kpn-console",
+        "portone-v2-integration",
+        "project_fitshot_payment_audit",
+        "portone-pg-onboarding",
+        "pg-paymethod-only-implemented"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q25-lazy-tz-paraphrase",
+      "retrieved": [
+        "module-env-lookup-pitfall",
+        "lazy-timezone-resolution",
+        "deploy-flat-import",
+        "test-production-path-pollution",
+        "retroactive-transcript-parsing"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q26-oceanweb-paraphrase",
+      "retrieved": [
+        "오션웹 = 페이퍼클립",
+        "netwaif-multi-agent-starter",
+        "harness-local-agent-type",
+        "subagent-model-inherit",
+        "사용자 실제 상황 — 본업은 개발이 아님"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q27-numpy-paraphrase",
+      "retrieved": [
+        "numpy-mat-meta-align",
+        "스마트스토어 SaaS (RESET 2026-04-17)",
+        "cross-process-create-race",
+        "systematic-debugging-code-review",
+        "MEMORY-PROCEDURAL"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q28-loopback-paraphrase",
+      "retrieved": [
+        "loopback-ipv6-hijack",
+        "iwinv-elcap-outbound",
+        "pattern-parity-guard",
+        "portone-v2-integration",
+        "project_fitshot_payment_audit"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q29-credit-paraphrase",
+      "retrieved": [
+        "credit-refund-bucket-direct",
+        "no-v1-token-waste",
+        "sort-key-decay-parity",
+        "recalled-memory-weight",
+        "wysiwyg-snapshot-diff"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q30-iwinv-paraphrase",
+      "retrieved": [
+        "iwinv-elcap-outbound",
+        "loopback-ipv6-hijack",
+        "v0 MCP 설정",
+        "icloud-secret-handoff",
+        "/assemble 스킬은 로컬 맥에서만 테스트 가능"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q31-jsnull-paraphrase",
+      "retrieved": [
+        "js-null-number-coerce",
+        "nextjs-dev-next-cache-stale",
+        "feedback-frozen-sweep-self-audit",
+        "no-v1-token-waste",
+        "vacuous-pass-guard"
+      ],
+      "recall_at_5": 1.0
+    },
+    {
+      "query_id": "q32-html-paraphrase",
+      "retrieved": [
+        "html-output-default",
+        "anthropic-html-video-2026-05-16",
+        "scan-natural-language",
+        "subagent-model-inherit",
+        "텔레그램 리모컨 화살표 키 실용성 낮음"
+      ],
+      "recall_at_5": 1.0
+    }
+  ]
+}

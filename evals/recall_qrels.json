@@ -1,0 +1,262 @@
+{
+  "schema_version": 1,
+  "_description": "MV recall regression corpus — query→expected memory name(s). 모든 relevant name 은 실제 인덱싱된 memories.name(frontmatter name). gbrain qrels-file.ts 스키마를 MV name 단일 slug 로 축약(plan §1.1).",
+  "queries": [
+    {
+      "query_id": "q01-sendmail",
+      "query": "msmtp 로 Gmail SMTP 통해 메일 보내는 CLI 래퍼 첨부파일 설정",
+      "relevant": ["sendmail-cli"],
+      "expected_top1": "sendmail-cli",
+      "label": "tool-recall",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q02-scanner",
+      "query": "EPSON L605 USB 스캐너 AirScan 자동 크롭 CLI 도구",
+      "relevant": ["scanner-cli"],
+      "expected_top1": "scanner-cli",
+      "label": "tool-recall",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q03-higgsfield-cli",
+      "query": "힉스필드 CLI generate create 모델 이미지 명령어 사용법",
+      "relevant": ["higgsfield-cli-generate"],
+      "expected_top1": "higgsfield-cli-generate",
+      "label": "tool-recall",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q04-graphify-nl",
+      "query": "그래피파이에 저장하고 자연어로 시키면 클로드가 직접 실행",
+      "relevant": ["graphify-natural-language"],
+      "expected_top1": "graphify-natural-language",
+      "label": "coined-name",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q05-oceanweb",
+      "query": "오션웹이라는 회사 이름이 뭐였지 페이퍼클립",
+      "relevant": ["오션웹 = 페이퍼클립"],
+      "expected_top1": "오션웹 = 페이퍼클립",
+      "label": "coined-name",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q06-iwinv",
+      "query": "iwinv ELCAP 방화벽 아웃바운드 화이트리스트 비우면 막힘",
+      "relevant": ["iwinv-elcap-outbound"],
+      "expected_top1": "iwinv-elcap-outbound",
+      "label": "coined-name",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q07-kakao-koe205",
+      "query": "카카오 OAuth KOE205 잘못된 요청 콘솔 동의항목 scope",
+      "relevant": ["kakao-oauth-koe205"],
+      "expected_top1": "kakao-oauth-koe205",
+      "label": "procedural",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q08-grammar-saas",
+      "query": "중학 영문법 영어 교육 SaaS 프로젝트 콘텐츠 시스템 현황",
+      "relevant": ["project-grammar-saas"],
+      "expected_top1": "project-grammar-saas",
+      "label": "project",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q09-haruko",
+      "query": "벚꽃이 지기 전에 미연시 본편 프로젝트 분기형 학원 청춘 위치",
+      "relevant": ["haruko-novel"],
+      "expected_top1": "haruko-novel",
+      "label": "project",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q10-fitshot-docker",
+      "query": "핏샷 Docker 배포 web worker 단일 이미지 한글폰트 convert 폴백",
+      "relevant": ["fitshot-docker-deploy"],
+      "expected_top1": "fitshot-docker-deploy",
+      "label": "project",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q11-fitshot-payment",
+      "query": "핏샷 포트원 V2 결제 보안 감사 적대검증 11결함 수정",
+      "relevant": ["project_fitshot_payment_audit"],
+      "expected_top1": "project_fitshot_payment_audit",
+      "label": "project",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q12-taxi-ledger",
+      "query": "택시장부 양대마켓 출시 IAP 잔여 부채 상세",
+      "relevant": ["project-taxi-ledger"],
+      "expected_top1": "project-taxi-ledger",
+      "label": "project",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q13-atomic-json",
+      "query": "다중 reader 환경 JSON 파일 atomic write tmp os.replace flock 패턴",
+      "relevant": ["procedural-atomic-json-write"],
+      "expected_top1": "procedural-atomic-json-write",
+      "label": "procedural",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q14-puppeteer-wrap",
+      "query": "puppeteer 16384px 캡처 표면 한계 초과 상단 wrap 손상 스크롤 타일",
+      "relevant": ["puppeteer-capture-16384-wrap"],
+      "expected_top1": "puppeteer-capture-16384-wrap",
+      "label": "procedural",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q15-credit-refund",
+      "query": "크레딧 환불 원 적립 버킷 직접 회수 미사용분 adjust 차감 금지",
+      "relevant": ["credit-refund-bucket-direct"],
+      "expected_top1": "credit-refund-bucket-direct",
+      "label": "procedural",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q16-numpy-align",
+      "query": "numpy matrix vs meta list 인덱스 정합 invalid row skip mat[i]",
+      "relevant": ["numpy-mat-meta-align"],
+      "expected_top1": "numpy-mat-meta-align",
+      "label": "procedural",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q17-no-v1-waste",
+      "query": "회수 hook 이 매 메시지마다 무관한 메모리 주입하면 V1 토큰 낭비 재현",
+      "relevant": ["no-v1-token-waste"],
+      "expected_top1": "no-v1-token-waste",
+      "label": "decision",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q18-subagent-inherit",
+      "query": "서브에이전트 모델 다운그레이드 금지 메인 모델 상속 default",
+      "relevant": ["subagent-model-inherit"],
+      "expected_top1": "subagent-model-inherit",
+      "label": "decision",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q19-no-api-default",
+      "query": "유료 종량 API 를 default 해법으로 깔지 말 것 Max 구독 자체 처리",
+      "relevant": ["feedback-no-api-default"],
+      "expected_top1": "feedback-no-api-default",
+      "label": "decision",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q20-outro-no-preview",
+      "query": "롱폼 아웃트로에서 다음 영상 예고 넣지 말 것",
+      "relevant": ["유튜브 영상 outro에 다음편 예고 금지"],
+      "expected_top1": "유튜브 영상 outro에 다음편 예고 금지",
+      "label": "decision",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q21-english-teacher",
+      "query": "사용자는 전직 영어 교사 영어 교육 언어학습 도메인 전문성",
+      "relevant": ["user-english-teacher-background"],
+      "expected_top1": "user-english-teacher-background",
+      "label": "user",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q22-honorific",
+      "query": "사용자 호칭은 형 캐주얼 반말 존칭 너 네 금지",
+      "relevant": ["사용자 호칭 및 톤"],
+      "expected_top1": "사용자 호칭 및 톤",
+      "label": "user",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q23-oracle-cloud",
+      "query": "평생 무료 개인 서버 오라클 클라우드 OCI Free Tier ARM",
+      "relevant": ["oracle-cloud-free-tier"],
+      "expected_top1": "oracle-cloud-free-tier",
+      "label": "reference",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q24-portone-console",
+      "query": "포트원 콘솔 Store ID API Secret 채널키 위치 KPN 테스트 MID",
+      "relevant": ["portone-kpn-console"],
+      "expected_top1": "portone-kpn-console",
+      "label": "reference",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q25-lazy-tz-paraphrase",
+      "query": "모듈 로드 시점에 시간대가 고정돼서 테스트 몽키패치가 안 먹는 문제",
+      "relevant": ["lazy-timezone-resolution"],
+      "expected_top1": "lazy-timezone-resolution",
+      "label": "procedural-paraphrase",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q26-oceanweb-paraphrase",
+      "query": "AI 에이전트 자동화 사업으로 가상 설립한 법인의 별칭",
+      "relevant": ["오션웹 = 페이퍼클립"],
+      "expected_top1": "오션웹 = 페이퍼클립",
+      "label": "coined-name-paraphrase",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q27-numpy-paraphrase",
+      "query": "벡터 배열에서 손상 행을 건너뛸 때 행렬과 메타 리스트 순서가 어긋나 엉뚱한 경로가 매칭되는 버그",
+      "relevant": ["numpy-mat-meta-align"],
+      "expected_top1": "numpy-mat-meta-align",
+      "label": "procedural-paraphrase",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q28-loopback-paraphrase",
+      "query": "로컬 포트를 IPv4 하나에만 바인딩하면 빈 자리로 다른 프로세스가 가로채는 보안 구멍",
+      "relevant": ["loopback-ipv6-hijack"],
+      "expected_top1": "loopback-ipv6-hijack",
+      "label": "procedural-paraphrase",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q29-credit-paraphrase",
+      "query": "환불할 때 적립 우선순위로 차감하면 프로모션이 잠식되는 문제",
+      "relevant": ["credit-refund-bucket-direct"],
+      "expected_top1": "credit-refund-bucket-direct",
+      "label": "procedural-paraphrase",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q30-iwinv-paraphrase",
+      "query": "클라우드 호스팅에서 패키지 설치가 실패하고 바깥으로 나가는 연결이 죄다 막힘",
+      "relevant": ["iwinv-elcap-outbound"],
+      "expected_top1": "iwinv-elcap-outbound",
+      "label": "coined-name-paraphrase",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q31-jsnull-paraphrase",
+      "query": "자바스크립트에서 빈 값 숫자 변환이 0 으로 둔갑하는 함정",
+      "relevant": ["js-null-number-coerce"],
+      "expected_top1": "js-null-number-coerce",
+      "label": "procedural-paraphrase",
+      "source": "handlabeled"
+    },
+    {
+      "query_id": "q32-html-paraphrase",
+      "query": "사용자에게 전달하는 리포트나 가이드를 기본으로 인터랙티브 형식으로",
+      "relevant": ["html-output-default"],
+      "expected_top1": "html-output-default",
+      "label": "decision-paraphrase",
+      "source": "handlabeled"
+    }
+  ]
+}

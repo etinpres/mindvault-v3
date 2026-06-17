@@ -37,6 +37,23 @@ LOCK_PATH = DATA_DIR / "memory-indexer.lock"
 EMBED_URL = "http://localhost:8081/embed"
 EMBED_TIMEOUT = 5  # seconds — 인덱싱 시점은 hook과 별개라 여유
 EMBED_DIM = 1024
+
+# ── Contextual Retrieval (CR, gbrain `contextual-retrieval-service.ts` 차용) ──
+# body 를 임베딩하기 전에 맥락 한 줄(name + synopsis)을 선붙여 별 벡터(embedding_ctx)로
+# 저장. 짧은/coined-name 메모리가 문서 맥락을 벡터에 담는다. 원본 embedding 은 불변
+# (off 모드 회귀 0). 비용은 전부 index-time — 회수 query-time 0ms 증가.
+CR_MODES = ("off", "title", "synopsis")
+CR_MODE = os.environ.get("MV3_CR_MODE", "off")  # index-time 기본 off
+SYNOPSIS_PROMPT_VERSION = 1
+WRAPPER_VERSION = 1
+CR_EMBED_MODEL_TAG = "arctic-ko-v2"  # corpus_generation 해시 입력(임베딩 모델 식별)
+CTX_SYNOPSIS_CAP = 300  # synopsis/description 맥락 줄 cap(자)
+# synopsis tier 전용 로컬 Gemma(zero-cost — 클라우드 금지). index-time 이라 관대한 timeout.
+# enable_thinking=False 로 reasoning 생략(3~7배 빠름, 품질 동일 — CLAUDE.md gemma 규약).
+GEMMA_SYNOPSIS_URL = "http://localhost:8080/v1/chat/completions"
+GEMMA_SYNOPSIS_MODEL = "mlx-community/gemma-4-12B-it-4bit"
+GEMMA_SYNOPSIS_TIMEOUT = 8.0
+GEMMA_SYNOPSIS_MAX_TOKENS = 120
 # Sprint 9: BGE-M3 → Arctic-Embed-L v2.0 KO 교체. CLS pooling + L2 normalized.
 # 서버가 "kind" 필드를 사용 (query → "query: " prefix 자동 부착).
 # Claude Code 가 cwd 마다 별도 projects 슬롯을 만들기 때문에
@@ -325,6 +342,123 @@ def _vec_to_blob(vec: list[float]) -> bytes:
     return np.asarray(vec, dtype=np.float32).tobytes()
 
 
+# ── Contextual Retrieval 헬퍼 (gbrain `embedding-context.ts`·`page-summary.ts` 이식) ──
+def active_cr_mode() -> str:
+    """런타임 CR 모드 — env 우선(setenv 호환), 미설정 시 import-time CR_MODE 기본.
+    유효하지 않은 값은 off 로 폴백."""
+    m = os.environ.get("MV3_CR_MODE", CR_MODE)
+    return m if m in CR_MODES else "off"
+
+
+_CTX_TAG_RE = re.compile(r"</?\s*context\s*>", re.IGNORECASE)
+
+
+def _sanitize_ctx(s: str, cap: int = CTX_SYNOPSIS_CAP) -> str:
+    """맥락 줄 정제 — context 태그 strip(대소문자·공백 변형 포함, 주입 방지),
+    공백 축약, cap(code-point 슬라이스라 멀티바이트 안전)."""
+    if not s:
+        return ""
+    s = _CTX_TAG_RE.sub(" ", s)
+    s = " ".join(s.split())
+    return s[:cap]
+
+
+def build_contextual_prefix(name: str, synopsis: str | None) -> str | None:
+    """`<context>{name}\\n{synopsis}</context>\\n` 접두 생성. synopsis 없으면
+    name-only(title). name·synopsis 둘 다 비면 None."""
+    name_s = _sanitize_ctx(name or "", cap=120)
+    syn_s = _sanitize_ctx(synopsis or "", cap=CTX_SYNOPSIS_CAP)
+    if not name_s and not syn_s:
+        return None
+    if syn_s:
+        return f"<context>{name_s}\n{syn_s}</context>\n"
+    return f"<context>{name_s}</context>\n"
+
+
+def wrap_body_for_embedding(body: str, prefix: str | None) -> str:
+    """contextual 임베딩용 wrapped 문자열. prefix None 이면 body 그대로(원본 불변)."""
+    return f"{prefix}{body}" if prefix else body
+
+
+def compute_corpus_generation(mode: str) -> str:
+    """16-char 해시 — mode/prompt_ver/gemma_model/wrapper_ver/embed_model 입력 변경
+    감지(stale → 재임베딩 트리거). mtime 만으로 못 잡는 '모드/프롬프트 변경' 재임베딩."""
+    raw = f"{mode}|{SYNOPSIS_PROMPT_VERSION}|{GEMMA_SYNOPSIS_MODEL}|{WRAPPER_VERSION}|{CR_EMBED_MODEL_TAG}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def generate_synopsis_gemma(
+    name: str, description: str, body: str
+) -> tuple[str | None, str]:
+    """로컬 Gemma 로 1줄 한국어 synopsis 생성(검색 맥락용). enable_thinking=False.
+    성공 → (synopsis, "ok"); 거부/빈/타임아웃/다운 → (None, reason)."""
+    snippet = (body or "").strip()[:1200]
+    prompt = (
+        "다음 메모리를 검색 인덱싱용으로 한국어 한 문장(15~30단어)으로 요약하라. "
+        "이 메모리가 '무엇에 관한 것인지' 핵심 주제·대상·맥락만 담고, 따옴표·머리말·군더더기 "
+        "없이 문장만 출력하라.\n\n"
+        f"<name>{name}</name>\n<description>{description}</description>\n<body>{snippet}</body>"
+    )
+    payload = json.dumps({
+        "model": GEMMA_SYNOPSIS_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": GEMMA_SYNOPSIS_MAX_TOKENS,
+        "temperature": 0.2,
+        "enable_thinking": False,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        GEMMA_SYNOPSIS_URL, data=payload,
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=GEMMA_SYNOPSIS_TIMEOUT) as resp:
+            data = json.loads(resp.read())
+    except (urllib.error.URLError, json.JSONDecodeError, UnicodeDecodeError, OSError, TimeoutError) as e:
+        _debug(f"cr synopsis gemma fail: {type(e).__name__}: {e}")
+        return None, "gemma_unavailable"
+    choices = data.get("choices") or []
+    if not choices or not isinstance(choices[0], dict):
+        return None, "no_choices"
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        return None, "no_message"
+    raw = message.get("content")
+    if raw is not None and not isinstance(raw, str):
+        return None, "nonstr_content"
+    syn = _sanitize_ctx(raw or "", cap=CTX_SYNOPSIS_CAP)
+    if not syn:
+        return None, "empty"
+    return syn, "ok"
+
+
+def compute_contextual_embedding(
+    name: str, description: str, body: str, mode: str
+) -> tuple[bytes | None, str | None, str]:
+    """주어진 모드로 contextual 임베딩 생성. body 가 있는 메모리 전용.
+
+    반환: (embedding_ctx_blob | None, cr_synopsis | None, effective_mode).
+    - title : description 을 맥락으로(LLM 0). description 빈약하면 name-only.
+    - synopsis : 로컬 Gemma 1줄 생성 → 실패 시 title 로 강등(R2).
+    - ctx 임베딩 자체 실패(서버 다운 등) → off 로 완전 폴백(인덱싱 무중단, raw 사용).
+    """
+    if mode == "off" or not body.strip():
+        return None, None, "off"
+    synopsis = None
+    effective = mode
+    if mode == "synopsis":
+        synopsis, _reason = generate_synopsis_gemma(name, description, body)
+        effective = "synopsis" if synopsis else "title"  # 강등
+    ctx_line = synopsis or (description if description.strip() else None)
+    prefix = build_contextual_prefix(name, ctx_line)
+    if prefix is None:
+        return None, None, "off"
+    wrapped = wrap_body_for_embedding(body, prefix)
+    vec_ctx = embed_text(wrapped)
+    if vec_ctx is None:
+        return None, None, "off"  # ctx 임베딩 실패 → raw 폴백
+    return _vec_to_blob(vec_ctx), ctx_line, effective
+
+
 def _parse_memory_file(path: Path) -> tuple[dict, str] | None:
     try:
         text = path.read_text(encoding="utf-8")
@@ -398,6 +532,7 @@ def incremental_index(
     try:
         conn = open_db(db_path)
         now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        cr_mode_active = active_cr_mode()  # off 기본 — 회귀 0
         try:
             existing = {
                 r["path"]: r["mtime_ns"]
@@ -462,6 +597,56 @@ def incremental_index(
                     _debug(f"embed unavailable, defer reindex: {p.name}")
                     continue
 
+                # Contextual Retrieval — body 임베딩에 맥락(name+synopsis) 선붙여 별
+                # 벡터(embedding_ctx) 생성. off 모드는 (None,None,"off") → 원본 불변.
+                # ctx 임베딩 실패는 off 폴백(파일 skip 아님 — raw 로 정상 인덱싱).
+                embedding_ctx, cr_synopsis, effective_mode = compute_contextual_embedding(
+                    name, description, body, cr_mode_active
+                )
+                # corpus_generation 은 *실제 달성 tier*(effective_mode) 기준 — 설정모드가
+                # 아니라 achieved tier 로 마킹해야 강등이 가짜 converged 되지 않는다.
+                # adversarial review 2026-06-17 (R12): 설정 synopsis 인데 Gemma 일시중단으로
+                # title 강등(effective="title", Arctic 정상이라 ctx 는 생성됨)되면, 설정모드
+                # 기준 gen("synopsis") 마킹 시 Gemma 복구 후에도 백필이 영영 제외(영구 title
+                # 고정). effective 기준이면 gen("title")≠gen("synopsis") 라 백필 후보로 남아
+                # 재시도된다. effective="off"(임베딩 실패/빈body)→gen("off")로 R5 가드도 subsume.
+                # 단 *빈 body*(effective="off" & body 없음 — ctx 구조적 불가)는 설정모드
+                # 기준 수렴 마킹(cr_backfill FIX 와 정합) — R13: gen("off")≠gen(설정) 이라
+                # 빈-body 가 매 백필 재선정되는 무한 no-op 방지. 비-빈 effective="off"(임베딩
+                # 실패)는 gen("off")로 후보 유지(R5).
+                corpus_generation = (
+                    compute_corpus_generation(cr_mode_active)
+                    if (effective_mode == "off" and not body.strip())
+                    else compute_corpus_generation(effective_mode)
+                )
+
+                # off 모드는 기존 ctx *벡터* 만 보존(파괴 금지), 단 cr_mode/
+                # corpus_generation 은 off 기본 유지. adversarial review 2026-06-17:
+                #  R1 — off-mode 재인덱싱이 백필 embedding_ctx 를 NULL 로 덮어써 파괴 →
+                #       embedding_ctx/cr_synopsis carry-forward 로 파괴 방지.
+                #  R2 — corpus_generation 까지 보존하면(gen=title) 다음 백필이 stale ctx
+                #       를 skip(gen 일치) → 영구 미갱신. 따라서 generation 은 off 기본
+                #       (gen("off") ≠ gen("title")) 으로 둬 다음 백필이 재처리·refresh.
+                # 즉 body 변경 후 ctx 는 잠시 stale 하나(off 회수는 raw 사용이라 무해),
+                # 백필 후보로 남아 다음 백필이 새 body 로 갱신한다(영구 stale 아님).
+                if cr_mode_active == "off":
+                    prev_v = conn.execute(
+                        "SELECT embedding_ctx, cr_synopsis FROM memories_vec "
+                        "WHERE path=? AND kind='body'", (sp,)
+                    ).fetchone()
+                    # body 가 바뀌었으면 기존 ctx 는 stale → carry-forward 안 함(codex
+                    # 2-track R11: use_ctx 검색이 stale ctx 벡터로 랭킹하며 새 raw row 를
+                    # 반환하는 오염 차단). body 동일(메타데이터/touch 재인덱싱)일 때만 보존
+                    # (R1: 백필 결과 파괴 금지). stale 시 embedding_ctx 는 None(off compute)
+                    # 유지 + corpus_generation=gen("off") → 다음 백필이 새 body 로 refresh.
+                    old_fts = conn.execute(
+                        "SELECT body FROM memories_fts WHERE path=?", (sp,)
+                    ).fetchone()
+                    body_unchanged = old_fts is not None and old_fts["body"] == body
+                    if body_unchanged and prev_v is not None and prev_v["embedding_ctx"] is not None:
+                        embedding_ctx = prev_v["embedding_ctx"]
+                        cr_synopsis = prev_v["cr_synopsis"]
+
                 conn.execute(
                     "DELETE FROM memories_fts WHERE path=?", (sp,)
                 )
@@ -470,15 +655,18 @@ def incremental_index(
                 )
                 conn.execute(
                     """
-                    INSERT INTO memories(path, name, description, mtime_ns, indexed_at)
-                    VALUES(?,?,?,?,?)
+                    INSERT INTO memories(path, name, description, mtime_ns, indexed_at,
+                                         cr_mode, corpus_generation)
+                    VALUES(?,?,?,?,?,?,?)
                     ON CONFLICT(path) DO UPDATE SET
                         name=excluded.name,
                         description=excluded.description,
                         mtime_ns=excluded.mtime_ns,
-                        indexed_at=excluded.indexed_at
+                        indexed_at=excluded.indexed_at,
+                        cr_mode=excluded.cr_mode,
+                        corpus_generation=excluded.corpus_generation
                     """,
-                    (sp, name, description, st.st_mtime_ns, now),
+                    (sp, name, description, st.st_mtime_ns, now, effective_mode, corpus_generation),
                 )
                 conn.execute(
                     "INSERT INTO memories_fts(path, body) VALUES(?,?)",
@@ -486,9 +674,9 @@ def incremental_index(
                 )
                 if vec_body is not None:
                     conn.execute(
-                        "INSERT INTO memories_vec(path, kind, embedding) "
-                        "VALUES(?,?,?)",
-                        (sp, "body", _vec_to_blob(vec_body)),
+                        "INSERT INTO memories_vec(path, kind, embedding, embedding_ctx, cr_synopsis) "
+                        "VALUES(?,?,?,?,?)",
+                        (sp, "body", _vec_to_blob(vec_body), embedding_ctx, cr_synopsis),
                     )
                 if vec_desc is not None:
                     conn.execute(

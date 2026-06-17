@@ -50,7 +50,7 @@ DEBUG_LOG = DATA_DIR / "debug.log"
 # 락 파일이라 memory 인덱서와는 독립).
 SESSION_LOCK_PATH = DATA_DIR / "session-indexer.lock"
 SIGNATURE = "# 지난 세션 요약 (MindVault v3)"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 # Sprint 6: 임베딩은 첫 N turn(user/assistant) 기준. 세션 의도는 앞쪽에 몰리고
 # 잡담 세션은 첫 N turn도 짧고 약하므로 신호/노이즈가 자연스럽게 분리된다.
 # SESSION_EMBED_CHARS는 안전망 — 한 turn에 거대한 paste가 들어와도 폭주 방지.
@@ -237,7 +237,9 @@ def _init_db(conn: sqlite3.Connection) -> None:
             name TEXT,
             description TEXT,
             mtime_ns INTEGER NOT NULL,
-            indexed_at TEXT NOT NULL
+            indexed_at TEXT NOT NULL,
+            cr_mode TEXT,
+            corpus_generation TEXT
         );
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
             path UNINDEXED,
@@ -248,7 +250,9 @@ def _init_db(conn: sqlite3.Connection) -> None:
             rowid INTEGER PRIMARY KEY AUTOINCREMENT,
             path TEXT NOT NULL,
             kind TEXT NOT NULL,
-            embedding BLOB NOT NULL
+            embedding BLOB NOT NULL,
+            embedding_ctx BLOB,
+            cr_synopsis TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_memories_vec_path ON memories_vec(path);
         CREATE TABLE IF NOT EXISTS sessions_vec (
@@ -296,11 +300,43 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     # 이미 최신. step 추가 시 `if current < N: conn.execute(...); current = N`.
     if current >= SCHEMA_VERSION:
         return
-    # 예시 step (향후 컬럼 추가 시):
-    #   if current < 4:
-    #       conn.execute("ALTER TABLE memories ADD COLUMN tags TEXT")
-    #       current = 4
+    # v4 (Contextual Retrieval, gbrain 차용): body 임베딩 전 맥락 한 줄(name+synopsis)을
+    # 선붙여 임베딩한 contextual 벡터를 별 컬럼에 저장. off 모드는 신컬럼 미사용 → 회귀 0.
+    #   memories_vec.embedding_ctx : contextual 임베딩(nullable, 없으면 embedding 폴백)
+    #   memories_vec.cr_synopsis   : 생성된 synopsis(감사/재현)
+    #   memories.cr_mode           : 이 메모리가 임베딩된 tier(off/title/synopsis)
+    #   memories.corpus_generation : 16-char 해시, 입력 변경 stale 감지(재임베딩 트리거)
+    # 멱등: column-존재 가드로 fresh DB(CREATE TABLE 에서 이미 보유)·재실행 모두 안전.
+    if current < 4:
+        _add_column_if_missing(conn, "memories_vec", "embedding_ctx", "BLOB")
+        _add_column_if_missing(conn, "memories_vec", "cr_synopsis", "TEXT")
+        _add_column_if_missing(conn, "memories", "cr_mode", "TEXT")
+        _add_column_if_missing(conn, "memories", "corpus_generation", "TEXT")
+        current = 4
     return
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, col: str) -> bool:
+    """PRAGMA table_info 로 컬럼 존재 확인(row_factory 무관 — 정수 인덱스)."""
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(r[1] == col for r in rows)  # r[1] = column name
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, col: str, decl: str) -> None:
+    """ALTER ADD COLUMN — SQLite 엔 IF NOT EXISTS 없어 PRAGMA 로 가드.
+
+    adversarial review 2026-06-17 (R3): check-then-ALTER 는 무락 open_db 동시호출
+    (recall 경로엔 DB 락 없음 — WAL 동시오픈 전제)에서 TOCTOU race 가능. 일회성
+    v3→v4 전환 윈도우에 두 프로세스가 동시에 column 부재를 관측하면 loser 가
+    "duplicate column name" OperationalError(busy_timeout 으로 흡수 안 됨)를 던진다.
+    benign race 이므로 swallow(파일의 graceful-skip 관례와 일치). 다른 ALTER 오류는 전파.
+    """
+    if not _column_exists(conn, table, col):
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise  # 진짜 오류는 전파
 
 
 def open_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
